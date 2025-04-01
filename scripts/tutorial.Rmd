@@ -1,11 +1,8 @@
-yaml
+# Epistentials
 
----
-title: "Epistentials"
-output: html_notebook
----
+## Introduction
 
-In this tutorial, we will learn how to use some basic functions that will help us analyze most relevant data sets from the perspective of global epistasis. Before we start, we must make sure that we have some relevant libraries installed:
+In this tutorial, we will learn how to use some basic functions that will help us analyze most relevant data sets from the perspective of global epistasis. Before we start, we must make sure that we have some libraries installed:
 
 ```{r}
 require(testthat)
@@ -14,10 +11,589 @@ require(tidyr)
 require(gtools)
 ```
 
-A bunch of data sets are available under the 
+Let us also load some custom functions that we will be using often:
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r}
+source('basic_functions.R')
+```
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+Note that, in our environment, there should have appeared some functions including `getFEEs()`, `getInterCoeficients()`, etc. We will explain how to use them throughout this tutorial, seeing use cases on some example data sets.
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+A bunch of data sets are available in the `data_sets` folder under the main directory. Let us try loading one of them.
+
+```{r}
+df <- read.csv('../data_sets/pyoverdine-training_Diaz-Colunga2024.csv')
+```
+
+Let's take a look at `df`.
+
+```{r}
+head(df)
+```
+
+This data frame contains 12 columns: the first 8 correspond to the compositional variables, which take values 0 or 1. Each row corresponds to a different combination of elements (in this case, the elements are eight bacterial species named `sp_1` to `sp_8`). The 1s and 0s denote the presence or absence of each element, respectively. The last three columns are measurements of some function (in this example, concentration of pyoverdines secreted by every bacterial assemblage, in μM units) corresponding to each combination of elements.
+
+Note that in this data set, functions have been measured in three independent replicates. Note also that the data set is not combinatorially complete: there are only 165 (unique) rows out of the $2^8 = 256$ potential combinations one could form with eight species. Finally, note that there are no repeated compositions across rows --- that is, no two (or more) rows of the data frame share the same combination of 0s and 1s in the compositional variables. We can easily check this by looking at how many unique rows there are in the first eight columns of `df`:
+
+```{r}
+nrow(unique(df[, 1:8]))
+```
+
+And noticing that this is, indeed, the total number of rows in `df`:
+
+```{r}
+nrow(df)
+```
+
+In other data sets, however, we might find different replication structures. For instance, there could be a single measurement of the function, but with multiple rows of the table sharing the same composition. Let's see a different data frame:
+
+```{r}
+df2 <- read.csv('../data_sets/butyrate_Clark2021.csv')
+```
+
+In `df2`, there are 26 variables, with the first 25 being compositional (presence/absence of 25 different elements) and the last one encoding some output function. There are 1562 observations (rows), but unlike in the previous data set, some of these are repeats:
+
+```{r}
+nrow(unique(df2[, 1:25]))
+```
+
+As we can see, there are only 578 unique combinations of elements, indicating that some must be repeated. We can further notice that the number of times that a same combination appears in the data frame is variable:
+
+```{r}
+counts <- table(do.call(paste, df2[, 1:25]))
+hist(counts, breaks = 20)
+```
+
+Quite a few combinations are largely over-represented. One particular combination even appears as many as 22 times!
+
+```{r}
+head(as.data.frame(sort(counts, decreasing = TRUE)))
+```
+
+These examples illustrate how the replication structure of different data sets may differ. Before we move on, let's see how to deal with this issue.
+
+## Dealing with replicates
+
+The problem with having multiple repeats (rows) of a same combination is that this may bias our understanding of the data. For instance, we can ask a simple question: in `df2`, what fraction of combinations have high function (say, larger than 30 units)?
+
+```{r}
+fraction_high <- sum(df2$function. > 30) / nrow(df2)
+fraction_high
+```
+
+So, we could think that roughly 26% of communities have a function above 30 units, which we may consider "high". But what happens now if we get rid of the row-repeats? For instance, we can take all unique element combinations, and for those which appear more than once, simply take the average of the function across all repeats. We can do this easily with `aggregate`:
+
+```{r}
+df2_rowAvgs <- aggregate(function. ~ .,
+                         data = df2,
+                         FUN = mean)
+```
+
+Let's see now what fraction of communities have high function:
+
+```{r}
+fraction_high <- sum(df2_rowAvgs$function. > 30) / nrow(df2_rowAvgs)
+fraction_high
+```
+
+We can notice that, in reality, the answer is closer to 31%. What is happening is that, in this data set, many low-function communities are repeated (i.e., appear in multiple rows), which artificially inflated the number of communities that appeared to be low-function. In other words: we were often counting a same low-function community multiple times.
+
+As a general rule, we should make sure that each unique element combination appears exactly once (i.e., in a single row) in the data frames we work with. To account for potential replicate measurements of the function, we can structure the data as in the original data frame `df`, that is, having more than one "function" column if necessary (remember that in `df` we have three function columns: `function.rep1`, `function.rep2`, and `function.rep3`).
+
+> ⚠️ *All custom functions encoded in the* `basic_functions.R` *file behave as explained above: if there are row-repeats, these are averaged before processing the data. If there are multiple "function" columns, these are assumed to be different replicates, and thus processing is done for each replicate separately (and ultimately, means and standard deviations across replicates are reported, if appropriate).*
+
+## Visually representing a landscape
+
+A *landscape* is a mapping between a multi-dimensional compositional space (most often containing all $2^N$ combinations made up by $N$ binary elements) and a scalar function $F$. Here we will see one of the simplest ways to visualize a landscape as a graph.
+
+The basic idea is that we can represent a landscape in a 2D plot, where the x-axis represents the number of elements in each of the $2^N$ assemblages, and the y-axis represents the function corresponding to each assemblage. Furthermore, we can incorporate more information into this type of representation by connecting each assemblage (i.e., each *node* of the graph) to their neighbors, that is, the assemblages that differ from it in the presence/absence of a single element. For instance, the assemblages $10010$ and $10011$ would be connected (through an *edge* of the graph), but the assemblages $10010$ and $01110$ would not.
+
+To generate this type of plot, we simply need to use the function `plotLandscape()`. Let's see an example with one specific data set which is combinatorially complete:
+
+```{r}
+df_xylose <- read.csv('../data_sets/xylose_Langenheder2010.csv')
+plotLandscape(df_xylose)
+```
+
+If the landscape is not complete, `plotLandscape()` will still work, but it will produce an incomplete graph (missing some edges). For example, the original pyoverdine data set we loaded previously (which we named `df`) is incomplete:
+
+```{r}
+plotLandscape(df)
+```
+
+Notice the missing edges in the plot above?
+
+### A little exercise
+
+Let us go back to the data set `df_xylose`, which is combinatorially complete. Imagine that we wanted to represent not the full landscape, but just a detail consisting of the assemblages $000000$, $100000$, $010000$, and $110000$. How would you do it? Try your solution below:
+
+```{r}
+
+```
+
+## Quantifying functional effects
+
+Perhaps the most basic operation we may want to perform when doing analyses related to global epistasis is quantifying the *functional effect* of an element on a given background. Let's go back to our original data frame `df`. For simplicity, let's just consider the first replicate and forget about the other two.
+
+```{r}
+df_rep1 <- df[, 1:9]
+```
+
+The functional effect $\Delta F$ of an element $i$ on a background $B$ is defined as the difference in function between the combination that contains $i$ (denoted $B+i$) and the function of the background:
+
+$$
+\Delta F_i (B) = F(B+i) - F(B)
+$$
+
+For instance, if $B$ contained elements 1 to 3: $B=\{ 1,1,1,0,0,0,\cdots \}$ and we wanted to compute the functional effect of the fourth element in this background, we would need to compare the function of $B$ with that of the combination $\{ 1,1,1,{\color{red} 1},0,0,\cdots \}$.
+
+This is exactly what the method `structureData()` does for us. Let us see how it works when we apply it to the data frame `df`:
+
+```{r}
+delta_Fs <- structureData(df_rep1)
+head(delta_Fs)
+```
+
+In the output data frame (`delta_Fs`), the first eight columns encode the composition of the background $B$ (for instance, the first row corresponds to the "empty" background, the second row corresponds to the background that contains `sp_3` only, etc.). The column `focal_element` specifies the element for which the functional effect was computed --- that is, the element $i$ in $\Delta F_i (B)$. The following columns indicate functions and functional effects:
+
+-   `fun_background` represents the function of the background. If replicates were provided, the means (`.mean`) and standard deviations (`.sd`) across replicates would be provided. Since in this example we are only processing a single replicate, the column `fun_background.sd` simply contains undefined (*NA*) values.
+
+-   `fun_plusone` contains the function of the "plus-ones", that is, the backgrounds plus the focal element $i$, which we were denoting as $F(B + i)$.
+
+-   `delta_fun` contains the functional effects: $F(B+i) - F(B)$.
+
+Note that, if row-repeats were provided in the input data frame, the first thing that `structureData()` would do is take the average functions across repeats, as explained in the previous section. If replicates were instead provided in separate columns, `structureData()` would compute means and standard deviations across them. For example, let us apply `structureData()` to the full data frame `df` (instead of removing replicates 2 and 3):
+
+```{r}
+delta_Fs <- structureData(df)
+head(delta_Fs)
+```
+
+Notice that, now, the columns `fun_background.sd`, `fun_plusone.sd`, and `delta_fun.sd` are not *NA*. Instead, each replicate was processed separately, and these columns contain the standard deviations across replicates of the indicated quantities.
+
+> ⚠️ *By default,* `structureData()` *automatically detects which columns of the input data frame correspond to composition and which correspond to function. This behavior can be overridden by directly specifying the indices of the function columns via the* `function_cols` *argument:* `structureData(df, function_cols = c(9, 10, 11))`*. Automatic detection, in any case, should work well in the vast majority of situations.*
+
+With a structured data frame, we can, for instance, look at the distributions of functional effects for every element:
+
+```{r}
+ggplot(delta_Fs, aes(x = delta_fun.mean)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~focal_element) +
+  geom_vline(xintercept = 0,
+             color = 'gray')
+```
+
+## Functional Effect Equations
+
+The *functional effect equation* of an element $i$ is defined as the regression of its functional effect ($\Delta F_i$) against the background function ($F(B)$), that is:
+
+$$
+\Delta F_i = a_i + b_i \, F(B)
+$$
+
+Where $a_i$ and $b_i$ are the intercept and slope of the regression, respectively. The method `plotFEEs()` allows us to easily fit and represent these FEEs. As an input, `plotFEEs()` simply takes a data frame `df`. Note that `df` does not need to be structured, as `plotFEEs()` internally calls `structureData()` by itself. This means that `plotFEEs()` will do everything that `structureData()` does with respect to replicates (i.e., take averages across row-repeats, and take means and standard deviations across different function columns). Let's see an example:
+
+```{r}
+plotFEEs(df)
+```
+
+Because replicates are present in separate `df` columns, `plotFEEs()` automatically represents error bars. As was the case with `structureData()`, the automatic detection of function columns can be overridden by explicitly specifying column indices in the `function_cols` optional argument: for instance, calling `plotFEEs(df, function_cols = c(9, 10, 11))` provides the same plot as above.
+
+By default, `plotFEEs()` will represent $\Delta F$ in the y-axis. As an alternative, we can ask it to represent $F(B+i)$ in the y-axis if we set the (optional) argument `mode` to `'plusone'`.
+
+```{r}
+plotFEEs(df, mode = 'plusone')
+```
+
+In addition, `plotFEEs()` will fit ordinary least-squares (OLS) linear regressions by default (this is the case in the previous two plots). We can instead ask it to fit regressions via total least-squares (TLS) by setting the (optional) argument `reg_type` to `'tls'`. Total least-squares makes most sense when regressing $F(B+i)$ against $F(B)$, that is, in the `'plusone'` mode.
+
+```{r}
+plotFEEs(df, mode = 'plusone', reg_type = 'tls')
+```
+
+If we want to extract the regression coefficients (slopes and intercepts), we can easily do it by calling `getFEEs()`, which works exactly like `plotFEEs()` but returns a data frame instead of producing plots. For instance, for the standard $\Delta F$-vs-$F$ representation, we can extract the ordinary least-squares regression coefficients by calling:
+
+```{r}
+regression_coefs <- getFEEs(df)
+regression_coefs
+```
+
+### A little exercise
+
+In the example above, we extracted the coefficients of the OLS regression of $\Delta F$ against $F(B)$, where both quantities in the x and y axis are (by default) averaged across the three replicates in `df`. If we wanted to look at each replicate separately, how would we do it? To check how much replicate-to-replicate variation there is in these coeffcients, how can we quantify the standard deviation of the slope of species `sp_1` across replicates? What about the intercept? What about all other species, `sp_2` to `sp_8`?
+
+Try your solution here:
+
+```{r}
+
+```
+
+## Regionality
+
+Sometimes, it may be noticeable to the naked eye that the FEE of a given element appears "split" into two or more branches. Let us see a specific example by looking at the data set from Sanchez-Gorostiaga et al. (2018):
+
+```{r}
+df_amyl <- read.csv('../data_sets/amyl_Sanchez-Gorostiaga2019.csv')
+head(df_amyl)
+```
+
+This data set consists of 6 elements (species), and is not combinatorially complete. Let us take a look at the FEE of each species:
+
+```{r}
+plotFEEs(df_amyl)
+```
+
+There is something clearly weird about the element named `P`, which corresponds to the species *P. polymyxa*. Let us take a closer look:
+
+```{r}
+deltaF_amyl <- structureData(df_amyl)
+deltaF_polymyxa <- deltaF_amyl[deltaF_amyl$focal_element == 'P', ]
+ggplot(deltaF_polymyxa, aes(x = fun_background.mean, y = delta_fun.mean)) +
+  geom_point() +
+  xlim(c(0, 15)) + ylim(c(0, 35))
+```
+
+There clearly seem to be two groups of points. What is different about them? In this particular case, the dots on the right happen to correspond to backgrounds that contain the element `T` (species *B. thuringiensis*), while dots on the left correspond to backgrounds without this element. Let us color dots by the presence or absence of `T`:
+
+```{r}
+ggplot(deltaF_polymyxa, aes(x = fun_background.mean, y = delta_fun.mean,
+                            color = factor(`T`))) +
+  geom_point() +
+  geom_smooth(method = 'lm', formula = y ~ x, se = F) +
+  xlim(c(0, 15)) + ylim(c(0, 35))
+```
+
+The difference is now very obvious. In order to properly capture it, we would need to fit two FEEs instead of one. Or, in other words, we would need to model the functional effect of *P. polymyxa* as:
+
+$$
+\Delta F_{\text{P}} (B) = 
+\begin{cases}
+a_{\text{P}}^{0} + b_{\text{P}}^{0} \, F_B & \text{if }\texttt{T} = 0\\
+a_{\text{P}}^{1} + b_{\text{P}}^{1} \, F_B & \text{if }\texttt{T} = 1
+\end{cases}
+$$
+
+Where $a_\texttt{P}^0$ and $b_\texttt{P}^0$ are the intercept and slope of the red line in the plot above (when `T` is absent, $\texttt{T} = 0$), and $a_\texttt{P}^1$ and $b_\texttt{P}^1$ are the intercept and slope of the blue line, when `T` is present ($\texttt{T} = 1$).
+
+In some cases, regionality may not be fully evident to the naked eye, but it might still exist. Let us take a closer look at the element `S` (corresponding to the species *B. subtilis*) of this same data set:
+
+```{r}
+deltaF_subtilis <- deltaF_amyl[deltaF_amyl$focal_element == 'S', ]
+ggplot(deltaF_subtilis, aes(x = fun_background.mean, y = delta_fun.mean)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE, formula = y ~ x)
+```
+
+Sure, it seems that a single linear model (i.e., a single FEE) works well enough. But we can notice that, if we now split the backgrounds by the presence or absence of element `P`, we find:
+
+```{r}
+deltaF_subtilis <- deltaF_amyl[deltaF_amyl$focal_element == 'S', ]
+ggplot(deltaF_subtilis, aes(x = fun_background.mean, y = delta_fun.mean,
+                            color = factor(P))) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE, formula = y ~ x)
+```
+
+Clearly, there are two regions which are determined by the presence or absence of *P. polymyxa* (element `P`).
+
+> ⚠️ *Currently, there is no way to automatically detect this type of "regionality" using the* `plotFEEs()` *or* `getFEEs()` *methods. Modeling regionality needs to be manually enforced. This is work in progress (in all honesty, it has been work in progress for a long, looong time).*
+
+### A little excercise
+
+Can you obtain the slopes and intercepts of the two FEEs for *B. subtilis*? (red and blue lines in the last plot). Try your solution here:
+
+```{r}
+# hint: given a data frame "df" with two columns "x" and "y",
+# we can fit a linear model of y vs. x by executing:
+# > my_linmod <- lm(y ~ x, data = df)
+# and obtain the slope and intercept examining the resulting object "my_linmod"
+# > my_linmod$coefficients
+```
+
+## Interaction coefficients
+
+In this section, we will learn how to extract interaction coefficients from a data set. If we want to model a function $F$ in terms of the presence/absence of a set of $N$ elements, we can define a vector $\mathbf{x} = (x_1, x_2, x_3,\cdots,x_N)$, where $x_i$ takes values 1 or 0 depending on the presence or absence, respectively, of the $i$-th element. We can then express $F$ generically as:
+
+$$
+F (\mathbf{x}) = F_0 + \sum_i F_i \, x_i + \sum_i \sum_{j>i} \epsilon_{ij} \, x_i \, x_j + \sum_i \sum_{j>i} \sum_{k>j>i} \epsilon_{ijk} \, x_i \, x_j \, x_k + \cdots
+$$
+
+Where the term $F_0$ represents the function of the "empty" set $(0,0,0,\cdots)$, and typically we will have $F_0 = 0$ in most data sets. The terms $F_i$ represent the function of the single-element assemblages (for instance, $F_1$ would be the function of element 1 alone), while $\epsilon_{ij}$, $\epsilon_{ijk}$, etc. would represent the interactions between elements at second order, third order, and so on.
+
+With the choice of $x_i = 0,1$ the interaction terms can be interpreted as deviations from additivity with respect to the previous order. For instance, if we found that the two-element assemblage $(1,1,0,0,\cdots)$ had a function that was 10 units lower than the sum of $F_1+F_2$, this would mean that the value of $\epsilon_{12}$ is $-10$. Similarly, if we found that the three-element assemblage $(1,1,1,0,0,\cdots)$ had a function 10 units higher than the expectation from a second-order model (that is, higher than $F_1+F_2+F_3+\epsilon_{12}+\epsilon_{13}+\epsilon_{23}$), that would indicate that the third-order interaction term is $\epsilon_{123} = +10$ in this case.
+
+If we have a combinatorially complete data set (i.e., containing measurements of the function of all $2^N$ combinations), then we can extract the exact values of all interaction coefficients at all orders (all $F_i$, $\epsilon_{ij}$, $\epsilon_{ijk}$, etc.). The function `getInterCoefficients()` allows us to do exactly this. To see how it works, let's load one of the combinatorially complete data sets:
+
+```{r}
+df3 <- read.csv('../data_sets/pseudomonas-abs600-dilFactor0.025_Diaz-Colunga2024.csv')
+head(df3)
+```
+
+And let's examine the interaction coefficients:
+
+```{r}
+inter_coeffs <- getInterCoefficients(df3)
+head(inter_coeffs)
+```
+
+In the output data frame above (`inter_coeffs`), the first column indicates the order of the coefficient (e.g., $F_0$ is of order 0, $F_1, F_2, F_3, \cdots$ are of order 1, $\epsilon_{ij}, \epsilon_{ik}, \epsilon_{jk}, \cdots$ are of order 2, and so on). The second column indicates the index of the coefficient, e.g., which elements specifically are $i$, $j$, and $k$ in $\epsilon_{ijk}$ (note that the elements in this data set are named `P1` to `P8`). The third and fourth columns represent the value of the coefficient (mean and standard deviation across replicates; if replicates are not provided, the `value.sd` column would contain *NA*s).
+
+Once again, the method `getInterCoefficients()` treats replicates as usual: if the input data frame contains row-repeats, these are averaged before processing. If replicates are provided in separate columns, each replicate is processed separately and then means and standard deviations across replicates are reported (as in the example above).
+
+Let's take a look at these coefficients graphically by representing their value against their order:
+
+```{r}
+ggplot(inter_coeffs, aes(x = order,
+                         y = value.mean,
+                         ymin = value.mean - value.sd,
+                         ymax = value.mean + value.sd,
+                         group = index)) +
+  geom_hline(yintercept = 0,
+             color = 'gray') +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(width = 0,
+                position = position_dodge(width = 0.5),
+                alpha = 0.25)
+```
+
+As we can see above, it seems that in this data set higher-order interactions are strong: for example, the magnitude of 7th-order interactions is comparable to the magnitude of the first-order effects ($F_1$, $F_2$, etc.). But we need to be careful when interpreting this result. It is fair for us to ask, for instance, what the effect of noise is when quantifying these interactions.
+
+### The effect of measurement noise on interaction coefficients
+
+Let's consider a very simple case: say that we have a system with $N=8$ elements in which the function is strictly additive, that is:
+
+$$
+F = \sum_{i=1}^8 F_i \, x_i
+$$
+
+And, again for simplicity, let's sample the coefficients $F_i$ randomly between 0 and 1.
+
+```{r}
+set.seed(0) # for reproducibility
+F_i <- runif(8, min = 0, max = 1)
+```
+
+Now, all the $2^8=256$ potential combinations from a set of 8 elements are already encoded in the data frame we examined previously, `df3`. Let's extract them and store them in a variable named `combinations`:
+
+```{r}
+combinations <- df3[, 1:8]
+```
+
+Let's calculate the function of every combination according to our strictly additive model and the values of $F_i$ that we sampled previously:
+
+```{r}
+model_fun <- sapply(1:nrow(combinations),
+                    FUN = function(i) sum(F_i * combinations[i, ]))
+model_df <- cbind(combinations, fun = model_fun)
+head(model_df)
+```
+
+Now we have created a simulated, strictly additive landscape. What would we see if we examined its interaction coefficients via the `getInterCoefficients()` method?
+
+```{r}
+model_coeffs <- getInterCoefficients(model_df)
+ggplot(model_coeffs, aes(x = order,
+                         y = value.mean,
+                         ymin = value.mean - value.sd,
+                         ymax = value.mean + value.sd,
+                         group = index)) +
+  geom_hline(yintercept = 0,
+             color = 'gray') +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(width = 0,
+                position = position_dodge(width = 0.5),
+                alpha = 0.25)
+```
+
+Nothing too special here: as expected, the first-order effects are positive (remember that we sampled them between 0 and 1), and all other coefficients are zero (since our model is strictly additive, there are no interactions).
+
+Now imagine that the instrument we used for measuring function was not perfect. What happens if we include some small measurement error? What we can do is modify all the values of the function $F$ by some small amount, which we call $\xi$.
+
+$$
+F \rightarrow F + \xi
+$$
+
+To be on the conservative side, we will sample $\xi$ from a normal distribution with mean 0 and standard deviation 20 times smaller than the standard deviation of the original distribution of functions, $\sigma_F$.
+
+$$
+\xi \sim \mathcal{N} \left( 0, \frac{\sigma_F}{20} \right)
+$$
+
+```{r}
+noisy_fun <- model_fun + rnorm(length(model_fun),
+                               mean = 0,
+                               sd = sd(model_fun)/20)
+noisy_df <- cbind(combinations, fun = noisy_fun)
+```
+
+You might expect that such a small amount of noise will not make a big difference. For example, let us plot the original, additive landscape we built in graph form, and compare it to the equivalent plot for the "noisy" landscape:
+
+```{r}
+plotLandscape(model_df)
+```
+
+```{r}
+plotLandscape(noisy_df)
+```
+
+At first sight, there are barely any noticeable differences. Now let's look at the interaction coefficients for the new, "noisy" data set.
+
+```{r}
+noisy_coeffs <- getInterCoefficients(noisy_df)
+ggplot(noisy_coeffs, aes(x = order,
+                         y = value.mean,
+                         ymin = value.mean - value.sd,
+                         ymax = value.mean + value.sd,
+                         group = index)) +
+  geom_hline(yintercept = 0,
+             color = 'gray') +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(width = 0,
+                position = position_dodge(width = 0.5),
+                alpha = 0.25)
+```
+
+Notice how, this time, the pairwise and higher-order coefficients are non-zero? This is normal: since we have added noise, our measured function is not "strictly additive" anymore. But it is important to also notice that the magnitude of the interaction coefficients seems to be going up with their order! For instance, the 6th- and 7th-order coefficients are very similar in magnitude to the first-order effects. This observation illustrates how we need to be careful when interpreting high-order interactions: here, for instance, these apparent interactions are not due to some real biological mechanism, but instead simply appear as an effect of measurement error (even when we made it very small!).
+
+### The Fourier basis
+
+So far, we have been considering that the compositional variables ($x_i$, $x_j$, etc.) take values 0 and 1. This is often referred to as the *Taylor basis* of the compositional space. But there is no reason, in principle, why we cannot use a different convention (i.e., a different basis). For instance, we could say that $x=3$ represents presence and $x=\pi/4$ represents absence, or whatever other pair of numbers we like.
+
+A convenient convention is choosing $x=-1,+1$, which we can refer to as the *Fourier basis*. Even if this may look like a simple arbitrary choice, it in fact has a bunch of nuanced implications. For instance, we had discussed that, in the Taylor basis, an interaction term of order $n$ could be interpreted as a "correction" to the model of order $n-1$. As an example, the Taylor coefficient $\epsilon_{12}$ corrects the additive expectation from the sum of the first-order effects of elements 1 and 2:
+
+$$
+F(12) = F_1 + F_2 + \epsilon_{12}
+$$
+
+Where we have assumed $F_0 = 0$ (as is common in most data sets) in the expression above.
+
+What about the Fourier base? Let's say that now $x$ took values $-1$ and $+1$. Similar to what we did before, we can expand $F$ as:
+
+$$
+F = \beta_0 + \sum_i \beta_i \, x_i + \sum_i \sum_{j>i} \beta_{ij} \, x_i \, x_j + \cdots
+$$
+
+Let's see what we obtain if, for instance, we consider the assemblage that contains element 1 only. This means that we must set $x_1=+1$ and all other $x_2 = x_3 = x_4 = \cdots = -1$. From the previous equation, that gives us:
+
+$$
+F(1) = \beta_0 + \beta_1 - \beta_2 - \beta_3 - \beta_4 - \cdots - \beta_{12} - \beta_{13} + \beta_{23} + \cdots
+$$
+
+Notice that, now, all coefficients appear in the expansion of $F(1)$, not just the first-order one. Therefore, we cannot simply interpret $\beta_1$ as the function of element 1 alone, as was the case with the analogous Taylor coefficient. The interpretation of the Fourier coefficients ($\beta$) is a bit more nuanced, and we will not get into details in this tutorial.
+
+Just to get a sense of what's going on, let's briefly note that the $i$th first-order Fourier coefficient ($\beta_i$) is equal to the average functional effect of element $i$ across all backgrounds:
+
+$$
+\beta_i = \langle F(B+i) - F(B) \rangle_{B} = \langle \Delta F_i(B) \rangle_B
+$$
+
+And the second-order Fourier coefficient $\beta_{ij}$ is related to another background-average, in this case:
+
+$$
+\beta_{ij} = \frac{1}{2} \langle F(B+i+j) - F(B+i)-F(B+j)+F(B) \rangle_B
+$$
+
+This is, in fact, the background-averaged interaction between elements $i$ and $j$ in a "Taylor sense." For instance, we can take any arbitrary background $B$ and examine the assemblages $B$, $B+i$, $B+j$, and $B+i+j$. The functional effect of $i$ in that background is, as we explained before:
+
+$$
+\Delta F_i(B) = F(B+i) - F(B)
+$$
+
+And similarly, the functional effect of $j$ on that same background is:
+
+$$
+\Delta F_j(B) = F(B+j) - F(B)
+$$
+
+Now, if the two elements did not interact (in a Taylor sense), adding both of them to the background $B$ should result in these functional effects simply adding up:
+
+$$
+F(B+i+j) = F(B) + \Delta F_i(B) + \Delta F_j(B)
+$$
+
+But if an interaction does exist, then the function of $B+i+j$ will be different than what we wrote above. We can denote this difference as $\epsilon_{ij} (B)$:
+
+$$
+\epsilon_{ij}(B) = F(B+i+j) - \left[ F(B) + \Delta F_i(B) + \Delta F_j(B) \right]
+$$
+
+After some algebra, we can notice that $\epsilon_{ij}(B)$ can be expressed as:
+
+$$
+\epsilon_{ij}(B) = F(B+i+j) - F(B+i)-F(B+j)+F(B)
+$$
+
+Which means that, if we compute these factors $\epsilon_{ij}(B)$ for all possible backgrounds $B$ and we take their average, we will have computed the second-order Fourier coefficient $\beta_{ij}$:
+
+$$
+\beta_{ij} = \frac{1}{2} \langle \epsilon_{ij}(B) \rangle_B
+$$
+
+We will not provide further details in this tutorial beyond the basic notion that Taylor and Fourier coefficients are related to each other through background-averages.
+
+#### Obtaining Fourier coefficients via `getInterCoefficients()`
+
+The `getInterCoefficients()` method allows us to easily compute the Fourier coefficients of a landscape/data set. For that, we just need to set the argument `mode` to `'Fourier'` (the default is `'Taylor'`). Let's see an example using the "striclty additive" data set we generated previously:
+
+```{r}
+model_coeffs_fourier <- getInterCoefficients(model_df, mode = 'Fourier')
+ggplot(model_coeffs_fourier, aes(x = order,
+                                 y = value.mean,
+                                 group = index)) +
+  geom_hline(yintercept = 0,
+             color = 'gray') +
+  geom_point(position = position_dodge(width = 0.5))
+```
+
+It looks fairly similar to what we saw for the Taylor coefficients, except the zero-order coefficient ($\beta_0$) is now positive instead of zero. But other than that, no surprises: the first-order coefficients are positive, and the higher-order ones are zero.
+
+Let's examine the "noisy" data set now:
+
+```{r}
+noisy_coeffs_fourier <- getInterCoefficients(noisy_df, mode = 'Fourier')
+ggplot(noisy_coeffs_fourier, aes(x = order,
+                                 y = value.mean,
+                                 group = index)) +
+  geom_hline(yintercept = 0,
+             color = 'gray') +
+  geom_point(position = position_dodge(width = 0.5))
+```
+
+Notice how this time the higher-order coefficients are not strictly zero, but they are still very small! Intuitively, this indicates that Fourier coefficients are more robust than Taylor coefficients to noise in the data. We can see this even more explicitly: let's directly plot the Taylor coefficients of the original versus the noisy data sets:
+
+```{r}
+ggplot(data.frame(x = model_coeffs$value.mean, y = noisy_coeffs$value.mean),
+       aes(x = x, y = y)) +
+  geom_abline(slope = 1,
+              intercept = 0,
+              color = 'gray') +
+  geom_point() +
+  xlab('Clean data set coefficients') +
+  ylab('Noisy data set coefficients') +
+  ggtitle('Taylor coefficients') +
+  theme(aspect.ratio = 1) +
+  geom_blank(aes(x = y, y = x)) # small hack for equal x and y axis
+```
+
+Now let's do the same with the Fourier coefficients:
+
+```{r}
+ggplot(data.frame(x = model_coeffs_fourier$value.mean,
+                  y = noisy_coeffs_fourier$value.mean),
+       aes(x = x, y = y)) +
+  geom_abline(slope = 1,
+              intercept = 0,
+              color = 'gray') +
+  geom_point() +
+  xlab('Clean data set coefficients') +
+  ylab('Noisy data set coefficients') +
+  ggtitle('Fourier coefficients') +
+  theme(aspect.ratio = 1) +
+  geom_blank(aes(x = y, y = x)) # small hack for equal x and y axis
+```
+
+> ⚠️ *To obtain Fourier coefficients from a data set, we must call* `getInterCoefficients(df, mode = 'Fourier')`*. It is important to note that the compositional variables in the input data frame* `df` *should be 0s and 1s as usual --- we do not need to previously convert them to +1 and -1, this conversion is done internally by* `getInterCoefficients()`*.*
+
+> ⚠️ *Both with* `mode = 'Fourier'` *or with the default* `mode = 'Taylor'`*, the method* `getInterCoefficients()` *relies on the input data frame being combinatorially complete, that is, containing all* $2^N$ *combinations of elements. If it isn't, the coefficient values that it will return may not be exact, and may instead be mere estimates. These estimates will be particularly unreliable if the input data frame is very incomplete. Furthermore, the method may return some unknown (NA) coefficient values that cannot be extracted from incomplete data.*
+
+> ⚠️ *Like with all other methods we have discussed in this tutorial,* `getInterCofficients()` *automatically detects which columns of the input data frame correspond to composition and which correspond to function. This behavior can be overridden by directly specifying the indices of the function columns via the* `function_cols` *argument:* `getInterCoefficients(df, function_cols = c(9, 10, 11), mode = 'Taylor')`*. As usual, if multiple function columns are specified/detected, they are treated as different replicates.*

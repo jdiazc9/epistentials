@@ -1,9 +1,7 @@
-rm(list = ls())
-
 require(testthat)
 require(ggplot2)
-library(tidyr)
-library(gtools)
+require(tidyr)
+require(gtools)
 
 structureData <- function(df, function_cols = 'auto') {
   
@@ -155,6 +153,7 @@ getFEEs <- function(df, function_cols = 'auto', mode = 'delta', reg_type = 'ols'
                            
                          }))
   
+  rownames(regs) <- NULL
   return(regs)
   
 }
@@ -282,9 +281,9 @@ getInterCoefficients <- function(df, function_cols = 'auto', mode = 'Taylor') {
     df <- lapply(df,
                  FUN = function(df_i) {
                    
-                   comp_vars <- df_i[, 1:(ncol(df) - 1)]
+                   comp_vars <- df_i[, 1:(ncol(df_i) - 1)]
                    comp_vars[comp_vars == 0] <- -1
-                   return(cbind(comp_vars, df_i$fun))
+                   return(cbind(comp_vars, fun = df_i$fun))
                    
                  })
     
@@ -311,6 +310,7 @@ getInterCoefficients <- function(df, function_cols = 'auto', mode = 'Taylor') {
                           aggregate(value ~ .,
                                     data = output_coefs,
                                     FUN = function(x) c(mean = mean(x), sd = sd(x))))
+  rownames(output_coefs) <- NULL
   return(output_coefs)
   
 }
@@ -436,37 +436,154 @@ getEffectiveInteractions <- function(df, function_cols = 'auto') {
   
 }
 
-
-
-
-
-
-
-                      
-                                               
-                      
-
-
-
-
-
-### EXAMPLES
-
-if (T) {
+plotLandscape <- function(df, function_cols = 'auto') {
   
-  function_cols <- 'auto'
-  df <- read.csv('../data_sets/pyoverdine-training_Diaz-Colunga2024.csv')
-  gedf <- structureData(df)
-  plotFEEs(df, mode = 'delta')
-  plotFEEs(df, mode = 'plusone', reg_type = 'tls')
-  effInter <- getEffectiveInteractions(df)[['effInter']]
-  expected_slopes <- getEffectiveInteractions(df)[['expected_slopes']]
+  # structure replicates, if any (this whole chunk is borrowed from the
+  # structureData() function, see details there)
+  if (function_cols == 'auto') {
+    function_cols <- sapply(1:ncol(df),
+                            FUN = function(i) length(unique(df[, i])))
+    function_cols <- which(function_cols > 2)
+  }
+  comp_cols <- setdiff(1:ncol(df), function_cols)
+  elements <- colnames(df)[comp_cols]
+  df <- lapply(function_cols,
+               FUN = function(i) aggregate(fun ~ .,
+                                           data = cbind(df[, comp_cols], fun = df[, i]),
+                                           FUN = mean))
   
-  # df <- read.csv('../data_sets/amyl_Sanchez-Gorostiaga2019.csv')
-  # plotFEEs(structureData(df), mode = 'delta')
-  # plotFEEs(structureData(df), mode = 'plusone')
+  # mean and SD of function across replicates
+  df <- do.call(data.frame,
+                aggregate(fun ~ .,
+                          data = do.call(rbind, df),
+                          FUN = function(x) c(mean = mean(x), sd = sd(x))))
   
+  # number of elements
+  n_elements <- rowSums(df[, elements])
+  
+  # is an input assemblage a direct descendant of another?
+  isDirectDescendant <- function(this_assemblage, of_this_assemblage) all(this_assemblage >= of_this_assemblage) & sum(this_assemblage) == (1 + sum(of_this_assemblage))
+  
+  # make edges of fitness graph
+  edges <- do.call(rbind,
+                   lapply(1:nrow(df),
+                          FUN = function(i) {
+                            
+                            source_assemblage <- df[i, elements]
+                            target_assemblages <- df[sapply(1:nrow(df),
+                                                            FUN = function(j) isDirectDescendant(df[j, elements], source_assemblage)),
+                                                     elements]
+                            
+                            if(nrow(target_assemblages)) {
+                              edges <- data.frame(source = paste(source_assemblage, collapse = ''),
+                                                  target = sapply(1:nrow(target_assemblages), FUN = function(j) paste(target_assemblages[j, ], collapse = '')),
+                                                  source.nmut = n_elements[i],
+                                                  target.nmut = 1 + n_elements[i])
+                            } else {
+                              edges <- data.frame(source = character(0),
+                                                  target = character(0),
+                                                  source.nmut = numeric(0),
+                                                  target.nmut = numeric(0)) 
+                            }
+                            
+                            return(edges)
+                            
+                          }))
+  
+  edges <- cbind(edge_id = paste('edge_', 1:nrow(edges), sep = ''),
+                 edges)
+  
+  # plot graph
+  ### FIXME: this NEEDS to be optimized
+  mycolors <- c('#939598', '#d68f28', '#415ba9', '#a96cad')
+  
+  n_mut <- ncol(df) - 1
+  
+  landscape <- data.frame(genot = sapply(1:nrow(df),
+                                         FUN = function(i) paste(df[i, elements], collapse = '')),
+                          f = df$fun.mean,
+                          f.sd = df$fun.sd)
+  
+  dfl <- cbind(edges,
+               source.f = setNames(landscape$f, landscape$genot)[edges$source],
+               target.f = setNames(landscape$f, landscape$genot)[edges$target],
+               source.f.sd = setNames(landscape$f.sd, landscape$genot)[edges$source],
+               target.f.sd = setNames(landscape$f.sd, landscape$genot)[edges$target])
+  
+  dfl$color <- 'A'
+  
+  dfx <- gather(dfl[, c(1, 4, 5)], position, nmut, source.nmut:target.nmut)
+  dfx$position <- setNames(c('source', 'target'), c('source.nmut', 'target.nmut'))[dfx$position]
+  
+  dfy <- gather(dfl[, c(1, 6, 7)], position, f, source.f:target.f)
+  dfy$position <- setNames(c('source', 'target'), c('source.f', 'target.f'))[dfy$position]
+  
+  dfxy <- merge(dfx, dfy, by = c('edge_id', 'position'))
+  
+  dfl <- merge(dfxy, dfl[, c('edge_id', 'color')], by = 'edge_id')
+  
+  dy <- min(c(max(landscape$f) - landscape$f[1], landscape$f[1] - min(landscape$f)))
+  dy <- round(dy/0.1)*0.1
+  ybreaks <- seq(landscape$f[1] - 10*dy, landscape$f[1] + 10*dy, by = dy)
+  
+  myplot <-
+    ggplot(dfl, aes(x = nmut, y = f, group = edge_id, color = color)) +
+    geom_abline(slope = 0,
+                intercept = 0,
+                color = '#d1d3d4') +
+    geom_line() +
+    scale_x_continuous(name = '# of elements',
+                       breaks = 0:n_mut,
+                       labels = as.character(0:n_mut)) +
+    scale_y_continuous(name = 'Function',
+                       expand = c(0.05, 0.05)) +
+    scale_color_manual(values = setNames(mycolors, LETTERS[1:length(mycolors)])) +
+    theme_bw() +
+    theme(aspect.ratio = 0.6,
+          panel.grid = element_blank(),
+          panel.border = element_blank(),
+          legend.position = 'none',
+          axis.title = element_text(size = 18),
+          axis.text = element_text(size = 16)) +
+    annotate("segment", x=-Inf, xend=Inf, y=-Inf, yend=-Inf, linewidth=0.5) +
+    annotate("segment", x=-Inf, xend=-Inf, y=-Inf, yend=Inf, linewidth=0.5)
+  
+  return(myplot)
+
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
