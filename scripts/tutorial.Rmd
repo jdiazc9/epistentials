@@ -9,6 +9,8 @@ require(testthat)
 require(ggplot2)
 require(tidyr)
 require(gtools)
+require(combinat)
+require(MASS)
 ```
 
 Let us also load some custom functions that we will be using often:
@@ -310,6 +312,171 @@ Can you obtain the slopes and intercepts of the two FEEs for *B. subtilis*? (red
 # > my_linmod$coefficients
 ```
 
+## Making predictions
+
+One of the reasons why characterizing FEEs is useful is because they can enable us to make predictions of the function of unobserved assemblages. For instance, let us consider the pyoverdines data set, `df`, and obtain the FEE coefficients for all elements:
+
+```{r}
+fee_coefs <- getFEEs(df)
+```
+
+Now, say that we wanted to predict the function of the assemblage $10000000$. We know that the function of the "empty" assemblage $00000000$ is zero, and we know that the functional effect of the first element (species), `sp_1`, can be modeled as $a_1 + b_1 F(B)$. The values of the slope and the intercept can be checked in the `fee_coefs` we just fit:
+
+```{r}
+a_1 <- fee_coefs$intercept[1]
+b_1 <- fee_coefs$slope[1]
+```
+
+Now, since we are starting off at the "empty" background which has function zero, we can predict what would happen if we added `sp_1` by simply substituting $F(B)=F(00000000)=0$ in the FEE for `sp_1`.
+
+$$
+\Delta F_1 (00000000) = a_1 + b_1 \cdot 0 = a_1
+$$
+
+So, our prediction for the function of the assemblage $10000000$ would simply be $a_1$, the intercept of the FEE for `sp_1`.
+
+```{r}
+a_1
+```
+
+What if we wanted to predict the function of the assemblage $10010000$ instead? Again, we can start off at the "empty" background. We just saw that our prediction for $F(10000000)$ would be equal to $a_1$. We can next ask how would the function $F$ change if we added `sp_4` to this "new" background $10000000$. We can answer this by simply substituting $F(B)=F(10000000)=a_1$ in the FEE for `sp_4`:
+
+$$
+\Delta F_4 (10000000) = a_4 + b_4 \cdot a_1
+$$
+
+So we could predict the function of the assemblage $10010000$ by simply adding this amount to the predicted function of the previous assemblage, $10000000$ (which, in turn, comes from adding the predicted $\Delta F_1$ to the function of the "empty" assemblage).
+
+$$
+F(10010000) = {F(00000000)} + \color{blue}{\Delta F_1(00000000)} + \color{red}{\Delta F_4(1000000)}
+$$
+
+$$
+F(10010000) = 0 + \color{blue}{a_1} + \color{red}{a_4 + b_4 \cdot a_1}
+$$
+
+```{r}
+a_4 <- fee_coefs$intercept[4]
+b_4 <- fee_coefs$slope[4]
+predicted_fun <- 0 + a_1 + a_4 + b_4*a_1
+predicted_fun
+```
+
+### A little exercise
+
+We just made a prediction for the function of the assemblage $10010000$. This assemblage is not in the data frame `df`, but it was assembled experimentally in a later experiment. The data from this later experiment is stored in the file `pyoverdine-test_Diaz-Colunga2024.csv`, under the `data_sets` folder. Can you load this data and check the empirical function of the assemblage $10010000$? How close is it to the predicted value (absolute and relative error)? Try your solution below:
+
+```{r}
+test_set <- read.csv('../data_sets/pyoverdine-test_Diaz-Colunga2024.csv')
+true_fun <- rowMeans(test_set[28, 9:10])
+
+# relative error
+(predicted_fun - true_fun) / true_fun
+```
+
+### Another little exercise
+
+Previously, we made the prediction by "adding" elements `sp_1` and `sp_4`, in that order, to the "empty" background. But we could have instead added `sp_4` first, and then `sp_1` after. Would the predicted value have changed? By how much? Try your solution below:
+
+```{r}
+
+```
+
+### One last little exercise
+
+Up to this point, we have been making our predictions by starting off at the "empty" assemblage, which has function zero. But it turns out that the assemblage $10000000$ is present in the data set `df`, that is, we have an empirical value for its function. So we could just evaluate the FEE of `sp_4` at this empirical value, and compute the prediction simply as:
+
+$$
+F(10010000) = F_{\text{empirical}} (10000000) + \Delta F_4(10000000)
+$$
+
+What would have been the predicted function if we have done it this way? What if we had started off with the empirical value of assemblage $00010000$ (also present in `df`) and evaluated the functional effect of `sp_1` on it? Try your solution below:
+
+```{r}
+
+```
+
+### The "stitching" method
+
+We often refer to this predictive method we just applied as the "stitching method." The idea is that we start off at some known function of an in-sample assemblage, and we "chain" the predictions given by the FEE of each element.
+
+So far we have been doing this manually, but we can easily implement the stitching method using the `predictF()` function. This function takes a data frame of observations `df`, as well as a list of out-of-sample assemblages, and returns predictions for the functions of all those out-of-samples. Let us see an example use case:
+
+```{r}
+target <- c(1,0,0,1,0,0,0,0) # the out-of-sample assemblage of interest
+predicted_fun <- predictF(df, target)
+predicted_fun
+```
+
+In addition, the "target" to predict can be a data frame of multiple assemblages. For instance, if we wanted to predict the function not only of assemblage $10010000$, but also of assemblage $00011111$, we can build a data frame of targets:
+
+```{r}
+targets <- as.data.frame(matrix(c(1,0,0,1,0,0,0,0,
+                                  0,0,0,1,1,1,1,1),
+                                nrow = 2,
+                                byrow = T))
+colnames(targets) <- paste('sp_', 1:8, sep = '')
+head(targets)
+```
+
+And make predictions for all assemblages in a single call to `predictF()`, as:
+
+```{r}
+predictF(df, targets)
+```
+
+For instance, we can take all assemblages in the test set of the pyoverdine data, and predict their function using the in-sample observations in `df`:
+
+```{r}
+targets <- test_set[, 1:8]
+predictions <- predictF(df, targets)
+```
+
+We can now compare these predictions with the true, empirical functions of the assemblages in the test set:
+
+```{r}
+merged <- merge(test_set, predictions)
+ggplot(merged, aes(x = predicted_fun, y = (function.rep1 + function.rep2)/2)) +
+  geom_abline(slope = 1, intercept = 0, color = 'gray') +
+  geom_point() +
+  xlim(0, 70) + ylim(0, 70) +
+  theme(aspect.ratio = 1)
+```
+
+This works fairly well, but it can work better if we infer residuals.
+
+$$
+\Delta F_i (B) = a_i + b_i \, F(B) \color{red}{+ \theta_i(B)}
+$$
+
+To make predictions inferring residuals, we simply need to set the `infer_residuals` argument of the `predictF()` function to `TRUE`. For example, if we wanted to predict the function of the pyoverdine test set, this time inferring residuals, we would call:
+
+```{r}
+predictions_withresiduals <- predictF(df, targets, infer_residuals = TRUE)
+```
+
+Let's compare the observations and the predictions when we perform residual inference:
+
+```{r}
+merged <- merge(test_set, predictions_withresiduals)
+ggplot(merged, aes(x = predicted_fun, y = (function.rep1 + function.rep2)/2)) +
+  geom_abline(slope = 1, intercept = 0, color = 'gray') +
+  geom_point() +
+  xlim(0, 70) + ylim(0, 70) +
+  theme(aspect.ratio = 1)
+```
+
+> ⚠️ *By default,* `predictF()` *will search for the closest assemblage in the in-sample data frame to start "stitching." If it cannot find any, it will start from the "empty" assemblage, assuming that its function is zero. Since every "order of stitching" can result in different predictions, by default* `predictF()` *averages the predictions given by every potential order.*
+
+> ⚠️ *The method* `predictF()` *with residual inference can be computationally expensive. It is recommended to set* `infer_residuals = TRUE` *only when data set size does not exceed 10 elements.*
+
+### A little exercise
+
+Can you compute the R-squared between the predicted and true functions, both with and without residual inference? Try your solution below:
+
+```{r}
+```
+
 ## Interaction coefficients
 
 In this section, we will learn how to extract interaction coefficients from a data set. If we want to model a function $F$ in terms of the presence/absence of a set of $N$ elements, we can define a vector $\mathbf{x} = (x_1, x_2, x_3,\cdots,x_N)$, where $x_i$ takes values 1 or 0 depending on the presence or absence, respectively, of the $i$-th element. We can then express $F$ generically as:
@@ -597,3 +764,5 @@ ggplot(data.frame(x = model_coeffs_fourier$value.mean,
 > ⚠️ *Both with* `mode = 'Fourier'` *or with the default* `mode = 'Taylor'`*, the method* `getInterCoefficients()` *relies on the input data frame being combinatorially complete, that is, containing all* $2^N$ *combinations of elements. If it isn't, the coefficient values that it will return may not be exact, and may instead be mere estimates. These estimates will be particularly unreliable if the input data frame is very incomplete. Furthermore, the method may return some unknown (NA) coefficient values that cannot be extracted from incomplete data.*
 
 > ⚠️ *Like with all other methods we have discussed in this tutorial,* `getInterCofficients()` *automatically detects which columns of the input data frame correspond to composition and which correspond to function. This behavior can be overridden by directly specifying the indices of the function columns via the* `function_cols` *argument:* `getInterCoefficients(df, function_cols = c(9, 10, 11), mode = 'Taylor')`*. As usual, if multiple function columns are specified/detected, they are treated as different replicates.*
+
+## Effective interactions

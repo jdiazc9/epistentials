@@ -2,6 +2,8 @@ require(testthat)
 require(ggplot2)
 require(tidyr)
 require(gtools)
+require(combinat)
+require(MASS)
 
 structureData <- function(df, function_cols = 'auto') {
   
@@ -436,6 +438,32 @@ getEffectiveInteractions <- function(df, function_cols = 'auto') {
   
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##################################################################
+################### EXTREMELY HACKY CODE BELOW ###################
+######################### NEEDS UPDATING #########################
+##################################################################
+
+
+
+
+
+
+
+
 plotLandscape <- function(df, function_cols = 'auto') {
   
   # structure replicates, if any (this whole chunk is borrowed from the
@@ -552,76 +580,795 @@ plotLandscape <- function(df, function_cols = 'auto') {
 
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-### TESTS
-
-
-if (F) {
+predictF <- function(df, target, infer_residuals = FALSE, function_cols = 'auto') {
   
-  # check that all element names are unique
-  # otherwise return warning & halt execution
-  elements <- colnames(df)[comp_cols]
-  test_that("Are element names (mutations/species/etc.) unique in the data frame?", {
-    expect_true(length(elements) == length(unique(elements)))
-  })
-  
-  # check that compositional variables are 0s and 1s
-  # otherwise return warning & halt execution
-  test_that("Are compositional variables 0s and 1s?", {
-    expect_true(all(sort(unique(unlist(df[, elements]))) == c(0, 1)))
-  })
-  
-  # check that each unique combination appears exactly once
-  # otherwise return warning & halt execution
-  test_that("Are there duplicate element combinations in the input data frame?", {
-    expect_true(all(unique(df[, elements]) == df[, elements]))
-  })
+  if (infer_residuals) {
+    
+    # apply closure condition to the WHOLE landscape to infer values of residuals
+    # only advisable for <10 species (otherwise pseudoinverse computation explodes)
+    
+    ### --------------------------------------------------------------------------
+    # aux. functions
+    
+    nSpecies <- function(community) {
+      
+      # returns the number of species in a community (given in 'sp1,sp2,sp3,...' format)
+      # returns 0 if input is NA
+      
+      as.numeric(sapply(community,
+                        FUN = function(comm) {
+                          if (is.na(comm)) return(0)
+                          else return(length(strsplit(comm, split = ',')[[1]]))
+                        }))
+      
+    }
+    
+    orderName <- function(community) {
+      
+      # order community names with the form 'sp2,sp2,sp3,...' so that species consistently
+      # appear in alphabetical order
+      
+      as.character(sapply(community,
+                          FUN = function(s) paste(sort(strsplit(s, split = ',')[[1]]),
+                                                  collapse = ',')))
+    }
+    
+    string2matrix <- function(data) {
+      
+      # takes a data frame with 2 columns, the first one containing community names
+      # (species present separated by commas with no spaces, e.g. 'sp1,sp2,sp3,...') and
+      # the second one community functions, and converts it to binary matrix format
+      
+      species <- sort(unique(unlist(lapply(data[, 1],
+                                           FUN = function(community) strsplit(community, split = ',')[[1]]))))
+      
+      data_out <- lapply(1:nrow(data),
+                         FUN = function(i) matrix(as.numeric(species %in% strsplit(data[i, 1], split = ',')[[1]]), nrow = 1))
+      data_out <- do.call(rbind, data_out)
+      colnames(data_out) <- species
+      
+      data_out <- cbind(data_out, fun = data[, 2])
+      
+      return(data_out)
+      
+    }
+    
+    matrix2string <- function(data) {
+      
+      # inverse operation with respect to string2matrix
+      
+      species <- colnames(data)[-ncol(data)]
+      
+      communities <- sapply(1:nrow(data),
+                            FUN = function(i) paste(species[data[i, -ncol(data)] == 1], collapse = ','))
+      communities <- orderName(communities)
+      
+      return(data.frame(community = communities,
+                        fun = data[, ncol(data)]))
+      
+    }
+    
+    containsSpecies <- function(species, community) {
+      
+      # returns TRUE if species is present in community, FALSE otherwise
+      
+      return(sapply(community,
+                    FUN = function(comm) species %in% strsplit(comm, split = ',')[[1]]))
+      
+    }
+    
+    closestPaths <- function(target_comm, comm_list, species.removal = F) {
+      
+      # given a focal community (comm) and a list of other communities (comm_list), returns those in comm_list that are closest to comm (in terms of species addition)
+      
+      # fetch communities that are potential ancestors of the target
+      isAncestor <- function(community_1, community_2) { # check if community_1 is an ancestor of community_2 (i.e. all species in community_1 are also in community_2)
+        sapply(community_1,
+               FUN = function(x) all(strsplit(x, split = ',')[[1]] %in% strsplit(community_2, split = ',')[[1]]))
+      }
+      if (!species.removal) comm_list <- comm_list[isAncestor(comm_list, target_comm)]
+      
+      if (length(comm_list) == 0) {
+        
+        warning(paste('For community\n', target_comm, '\nno ancestors in data. Returning <empty> community.', sep = ''))
+        
+        comm_list <- ''
+        
+      }
+      
+      all_comms <- data.frame(community = c(target_comm, comm_list),
+                              fun = NA)
+      all_comms <- string2matrix(all_comms)
+      
+      comm <- all_comms[1, 1:(ncol(all_comms) - 1), drop = F]
+      comm_list <- all_comms[2:nrow(all_comms), 1:(ncol(all_comms) - 1), drop = F]
+      
+      dist <- sapply(1:nrow(comm_list),
+                     FUN = function(i) sum(abs(comm_list[i, ] - comm)))
+      
+      which_min <- which(dist == min(dist))
+      closest_comms <- comm_list[which_min, , drop = F]
+      
+      
+      # paths to comm
+      paths <- lapply(1:nrow(closest_comms),
+                      FUN = function(i) comm - closest_comms[i, ])
+      paths <- do.call(rbind, paths)
+      
+      sources <- matrix2string(cbind(as.data.frame(closest_comms), fun = NA))$community
+      
+      # return info
+      return(cbind(source = sources, target = target_comm, dist = dist[which_min], as.data.frame(paths)))
+      
+    }
+    
+    pathSteps <- function(target, source, single.traj = F) {
+      
+      # get steps in trajectory from source to target communities through addition/removal of species
+      # is the closure condition is satisfied, a single trajectory is sufficient (speeds up calculations)
+      
+      path <- closestPaths(target, source)
+      
+      traj <- path[1, 4:ncol(path), drop = F]
+      traj <- colnames(traj)[abs(traj[1, ]) == 1]
+      
+      # should a single trajectory be returned? (this is enough if the closer condition is satisfied)
+      if (single.traj) {
+        
+        traj <- matrix(traj, nrow = 1)
+        
+      } else { # otherwise, return all possible trajectories (orders of species addition)
+        
+        if (length(traj) <= 4) {
+          
+          traj <- do.call(rbind, permn(traj))
+          
+        } else {
+          
+          # if number of steps is too large, getting all possible trajectories is computationally out of reach
+          # in that case, we take only 25 arbitrarily chosen paths
+          traj <- do.call(rbind,
+                          lapply(1:25,
+                                 FUN = function(i) matrix(sample(traj, size = length(traj), replace = F), nrow = 1)))
+          
+        }
+        
+      }
+      
+      traj_steps <- lapply(1:nrow(traj),
+                           FUN = function(i) {
+                             
+                             # trajectory
+                             cumtraj <- orderName(sapply(1:length(traj[i, ]), FUN = function(j) paste(traj[i, 1:j], collapse = ',')))
+                             cumtraj <- c(source,
+                                          sapply(1:length(cumtraj), FUN = function(j) orderName(paste(c(strsplit(source, split = ',')[[1]],
+                                                                                                        cumtraj[j]), collapse = ','))))
+                             cumtraj <- sapply(cumtraj, # if there are repetitions of species, that means the species is being removed instead of added
+                                               FUN = function(x) {
+                                                 
+                                                 xtab <- table(strsplit(x, split = ',')[[1]])
+                                                 removed_sp <- names(xtab)[xtab > 1]
+                                                 
+                                                 xout <- strsplit(x, split = ',')[[1]]
+                                                 xout <- paste(xout[!(xout %in% removed_sp)], collapse = ',')
+                                                 
+                                                 return(xout)
+                                                 
+                                               })
+                             cumtraj <- as.character(cumtraj)
+                             
+                             # knock-ins at each step
+                             knockins <- traj[i, ]
+                             
+                             # backgrounds
+                             backgrounds <- cumtraj[-length(cumtraj)]
+                             backgrounds <- sapply(1:length(backgrounds),
+                                                   FUN = function(i) {
+                                                     xout <- strsplit(backgrounds[i], split = ',')[[1]]
+                                                     xout <- xout[xout != knockins[i]]
+                                                     xout <- paste(xout, collapse = ',')
+                                                     return(xout)
+                                                   })
+                             backgrounds <- as.character(backgrounds)
+                             
+                             # signs
+                             signs <- sapply(knockins, FUN = function(x) path[1, x])
+                             signs <- as.numeric(signs)
+                             
+                             return(list(trajectory = cumtraj,
+                                         backgrounds = backgrounds,
+                                         knock_ins = knockins,
+                                         signs = signs))
+                             
+                           })
+      
+      if(single.traj) traj_steps <- traj_steps[[1]]
+      
+      return(traj_steps)
+      
+    }
+    
+    # end of aux. functions
+    ### --------------------------------------------------------------------------
+    
+    
+    
+    ### --------------------------------------------------------------------------
+    # preprocessing
+    
+    # structure replicates, if any (this whole chunk is borrowed from the
+    # structureData() function, see details there)
+    if (function_cols == 'auto') {
+      function_cols <- sapply(1:ncol(df),
+                              FUN = function(i) length(unique(df[, i])))
+      function_cols <- which(function_cols > 2)
+    }
+    comp_cols <- setdiff(1:ncol(df), function_cols)
+    elements <- colnames(df)[comp_cols]
+    df <- lapply(function_cols,
+                 FUN = function(i) aggregate(fun ~ .,
+                                             data = cbind(df[, comp_cols], fun = df[, i]),
+                                             FUN = mean))
+    
+    # mean and SD of function across replicates
+    df <- do.call(data.frame,
+                  aggregate(fun ~ .,
+                            data = do.call(rbind, df),
+                            FUN = function(x) c(mean = mean(x), sd = sd(x))))
+    df <- df[, c(elements, 'fun.mean')]
+    
+    # get FEEs
+    fits <- getFEEs(df)
+    elements <- fits$focal_element
+    fits <- data.frame(a = fits$intercept, b = fits$slope)
+    rownames(fits) <- elements
+    
+    # add "empty" assemblage if necessary
+    data <- matrix2string(df)
+    if (!any(data$community == '')) data <- rbind(data,
+                                                  data.frame(community = '',
+                                                             fun = 0))
+    
+    # format targets
+    if(!is.data.frame(target)) {
+      if (is.matrix(target)) {
+        target <- as.data.frame(target)
+      } else {
+        target <- as.data.frame(t(target))
+        colnames(target) <- elements
+      }
+    }
+    
+    target_id <- matrix2string(cbind(target, fun = NA))$community
+    
+    # end of preprocessing
+    ### --------------------------------------------------------------------------
+    
+    # make GE data
+    ge_data <- structureData(df)
+    ge_data <- data.frame(background = matrix2string(ge_data[, elements])$community,
+                          knock_in = ge_data$focal_element,
+                          background_f = ge_data$fun_background.mean,
+                          d_f = ge_data$delta_fun.mean)
+    
+    # get linear fits
+    # fits <- makeFEEs(ge_data)
+    
+    # fetch species names and build all combinatorial arrangements
+    species <- sort(unique(ge_data$knock_in))
+    communities <- orderName(unlist(sapply(1:length(species),
+                                           FUN = function(i) sapply(combn(species,
+                                                                          i,
+                                                                          simplify = FALSE),
+                                                                    FUN = paste, collapse = ','))))
+    communities <- c('<empty>', communities) # attach the 'empty' community
+    
+    # list epsilons that are known from observations
+    ge_data$background[ge_data$background == ''] <- '<empty>'
+    known_eps <- setNames(ge_data$d_f- (fits[ge_data$knock_in, 'a'] + fits[ge_data$knock_in, 'b']*ge_data$background_f),
+                          paste(ge_data$background, ge_data$knock_in, sep = '+'))
+    
+    # estimate standard deviations of epsilons
+    sigma <- sapply(species,
+                    FUN = function(sp) sd(known_eps[grepl(paste('\\+', sp, sep = ''), names(known_eps))]))
+    
+    # arrange epsilons in matrix form (rows: backgrounds, columns: knock-ins), this makes them easier to access later on
+    eps_matrix <- matrix(NA, nrow = length(communities), ncol = length(species))
+    colnames(eps_matrix) <- species
+    rownames(eps_matrix) <- communities
+    
+    # some of the epsilons are known from the observations: add them to the matrix
+    for (i in 1:length(known_eps)) {
+      eps_matrix[strsplit(names(known_eps)[i], split = '\\+')[[1]][1],
+                 strsplit(names(known_eps)[i], split = '\\+')[[1]][2]] <- known_eps[i]
+    }
+    
+    # elements of the matrix where the knock-in is already present in the background are set to NaN, other elements are either numeric (known epsilons) or NA (incognitas)
+    for (sp in species) {
+      eps_matrix[containsSpecies(sp, rownames(eps_matrix)), sp] <- NaN
+    }
+    
+    # epsilons in vector form (makes it easier to operate with them)
+    eps <- as.data.frame(matrix(NA, nrow = length(eps_matrix), ncol = 2))
+    for (i in 1:nrow(eps_matrix)) {
+      for (j in 1:ncol(eps_matrix)) {
+        eps[ncol(eps_matrix)*(i-1) + j, 1] <- paste(rownames(eps_matrix)[i], colnames(eps_matrix)[j], sep = '+')
+        eps[ncol(eps_matrix)*(i-1) + j, 2] <- eps_matrix[i, j]
+      }
+    }
+    eps <- eps[!is.nan(eps[, 2]), ]
+    eps <- eps[order(eps[, 2], na.last = FALSE), ]
+    rownames(eps) <- eps[, 1]
+    eps <- matrix(eps[, 2], dimnames = list(eps[, 1], 'eps'))
+    
+    rownames(eps) <- gsub('<empty>', '', rownames(eps))
+    communities[communities == '<empty>'] <- ''
+    
+    # build M matrix
+    # i and j are two arbitrary species
+    # B is an arbitrary background (not containing i or j), Bi and Bj are the same backgrounds containing also i and j respectively
+    # a_i, b_i are the intercept and slope of the fit FEE for species i
+    # e_i(B) is the epsilon for species i on background B
+    # general form of the constraint:
+    #   a_i*b_j + (1 + b_j)*e_i(B) + e_j(Bi) = a_j*b_i + (1 + b_i)*e_j(B) + e_i(Bj)
+    constraints <- data.frame(B = character(0), i = character(0), j = character(0))
+    
+    # list all backgrounds with at least 2 species less than the most rich community (containing all species)
+    bgs_valid <- communities[nSpecies(communities) <= length(species) - 2]
+    
+    # for each of those backgrounds, get all possible pairs of additional species (not in the background itself)
+    sp_valid <- containsSpecies(species, bgs_valid)
+    for (i in 1:length(bgs_valid)) {
+      sp <- species[!sp_valid[, i]]
+      pairs <- t(combn(sp, 2))
+      constraints <- rbind(constraints,
+                           data.frame(B = as.character(bgs_valid[i]),
+                                      i = pairs[, 1],
+                                      j = pairs[, 2]))
+    }
+    
+    # some of the constraints are redundant; to identify them we need to check which edges of the 'community graph' are covered by each constraint
+    isDescendant <- function(community_1, community_2) { # check if community_2 is a descendant of community_1 (i.e. all species in community_1 are also in community_2)
+      sapply(community_2,
+             FUN = function(x) all(strsplit(community_1, split = ',')[[1]] %in% strsplit(x, split = ',')[[1]]))
+    }
+    
+    edges <- NULL
+    nSpecies_comm <- nSpecies(communities)
+    for (i in 1:length(communities)) {
+      edges <- c(edges,
+                 paste(communities[i],
+                       communities[nSpecies_comm == (1 + nSpecies_comm[i]) & isDescendant(communities[i], communities)],
+                       sep = ' / '))
+    }
+    edges <- data.frame(edge = edges,
+                        covered = FALSE)
+    
+    redundant_constraints <- NULL
+    for (i in 1:nrow(constraints)) {
+      
+      # each constraint covers 4 communities
+      c1 <- constraints[i, 1]
+      c2 <- orderName(paste(c(strsplit(constraints[i, 1], split = ',')[[1]], constraints[i, 2]), collapse = ','))
+      c3 <- orderName(paste(c(strsplit(constraints[i, 1], split = ',')[[1]], constraints[i, 3]), collapse = ','))
+      c4 <- orderName(paste(c(strsplit(constraints[i, 1], split = ',')[[1]], constraints[i, 2], constraints[i, 3]), collapse = ','))
+      
+      # each constraint covers 4 edges
+      edges_i <- c(paste(c1, c2, sep = ' / '),
+                   paste(c1, c3, sep = ' / '),
+                   paste(c2, c4, sep = ' / '),
+                   paste(c3, c4, sep = ' / '))
+      
+      # which of those are already covered?
+      covered_i <- edges$covered[edges$edge %in% edges_i]
+      
+      if (all(covered_i)) { # if they are all covered, tag the i-th constraint as redundant
+        redundant_constraints <- c(redundant_constraints, i)
+      } else { # if they are not all covered, keep the constraint and set them all to covered
+        edges$covered[edges$edge %in% edges_i] <- TRUE
+      }
+      
+    }
+    
+    # remove redundant constraints
+    constraints <- constraints[-redundant_constraints, ]
+    
+    # formulate each constraint in matrix form
+    M <- matrix(0, nrow = nrow(constraints), ncol = nrow(eps))
+    C <- matrix(0, nrow = nrow(constraints), ncol = 1)
+    rownames(M) <- paste('C.', 1:nrow(constraints), sep = '')
+    rownames(C) <- rownames(M)
+    colnames(M) <- rownames(eps)
+    
+    for (k in 1:nrow(M)) {
+      
+      i <- constraints$i[k]
+      j <- constraints$j[k]
+      B <- constraints$B[k]
+      
+      Bi <- orderName(paste(c(strsplit(B, split = ',')[[1]], i), collapse = ','))
+      Bj <- orderName(paste(c(strsplit(B, split = ',')[[1]], j), collapse = ','))
+      
+      a_i <- fits[i, 'a']
+      b_i <- fits[i, 'b']
+      a_j <- fits[j, 'a']
+      b_j <- fits[j, 'b']
+      
+      e_i_B <- paste(B, i, sep = '+')
+      e_j_B <- paste(B, j, sep = '+')
+      e_j_Bi <- paste(Bi, j, sep = '+')
+      e_i_Bj <- paste(Bj, i, sep = '+')
+      
+      M[k, e_i_B] <- 1 + b_j
+      M[k, e_j_B] <- -(1 + b_i)
+      M[k, e_j_Bi] <- 1
+      M[k, e_i_Bj] <- -1
+      
+      C[k] <- a_j*b_i - a_i*b_j
+      
+    }
+    
+    # check if any constraint is automatically satisfied by the known epsilons
+    check <- M %*% eps - C
+    check <- sapply(1:nrow(check), FUN = function(i) check[i] < 1e-5) # tolerance: 1e-5 (elements won't be exactly 0 even when the constraint is satisfied due to floating-point precision)
+    
+    stopifnot(all(check[!is.na(check)] == TRUE)) # all checks should either be TRUE (constraint satisfied) or NA (constraint not evaluated due to missing epsilons), if this is not the case something has failed
+    
+    # the dimension of M can be further reduced by moving the known epsilons to the right-hand side of the equation M %*% eps = C
+    eps_1 <- eps
+    eps_1[!is.na(eps)] <- 0
+    eps_2 <- eps
+    eps_2[is.na(eps_2)] <- 0 # eps = eps_1 + eps_2 ---> M %*% eps_1 = C - M %*% eps_2
+    
+    C_prime <- C - (M %*% eps_2) # this makes it so the equation to solve is M %*% eps_1 = C_prime
+    remove_these <- sapply(1:nrow(M), FUN = function(i) all(as.numeric(M[i, ]) == rep(0, ncol(M)))) # to remove constraints that are automatically satisfied by the known epsilons
+    C_prime <- C_prime[!remove_these, ]
+    M <- M[!remove_these, 1:sum(is.na(eps))] # also removes the columns corresponding to known epsilons
+    
+    # scale elements of M by the sigmas
+    M_sigma <- M * matrix(rep(sigma[gsub('.*\\+' ,'', colnames(M))], nrow(M)), nrow = nrow(M), byrow = TRUE)
+    
+    # now we just need to solve the system of linear equations M_sigma %*% eps_sigma = C_prime where the elements of eps_sigma are the incognitas
+    # use the pseudoinverse for the solution that minimizes sum of squares of the elements of eps_sigma
+    M_sigma_pseudoinv <- ginv(M_sigma)
+    eps_sigma_0 <- M_sigma_pseudoinv %*% C_prime
+    rownames(eps_sigma_0) <- colnames(M)
+    
+    # undo the sigma transformation to recover the epsilons
+    eps_1 <- eps_sigma_0 * sigma[gsub('.*\\+' ,'', rownames(eps_sigma_0))]
+    
+    # add these values to the matrix of epsilons
+    for (i in 1:nrow(eps_1)) {
+      B <- gsub('\\+.*', '', rownames(eps)[i])
+      if (B == '') B <- '<empty>'
+      knockin <- gsub('.*\\+', '', rownames(eps)[i])
+      eps_matrix[B, knockin] <- eps_1[i]
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    ### MAKE PREDICTIONS
+    
+    # iterate over target (multiple target communities can be passed at once)
+    predicted_f <- sapply(target_id,
+                          FUN =  function(t) {
+                            
+                            # get closest path to target community (although any path should be equivalent if the closure condition is satisfied globally)
+                            path <- closestPaths(t, data$community)
+                            steps <- pathSteps(t, path$source[1], single.traj = T)
+                            steps$backgrounds[steps$backgrounds == ''] <- '<empty>'
+                            
+                            # iterate
+                            comm <- steps$trajectory[1]
+                            fun <- mean(data$fun[data$community == comm])
+                            for (s in 1:length(steps$knock_ins)) {
+                              comm <- steps$trajectory[s]
+                              fun <- fun + steps$signs[s]*(fits[steps$knock_ins[s], 'a'] + fits[steps$knock_ins[s], 'b']*fun + eps_matrix[steps$backgrounds[s], steps$knock_ins[s]])
+                            }
+                            
+                            return(fun)
+                            
+                          })
+    
+    out <- cbind(target, predicted_fun = predicted_f)
+    rownames(out) <- NULL
+    
+    return(out)
+    
+  } else {
+    
+    # predict the function of a community (target) starting from the function of an in-sample community
+    # considers every unknown residual to be zero
+    # first obtains the in-sample communities that are closer to the target community, then every possible path (i.e. order of addition/removal of species)
+    # final prediction is the average across all paths
+    
+    # ----------------------------------------------------------------------------
+    # internal, auxiliary functions
+    
+    orderName <- function(community) {
+      
+      # order community names with the form 'sp2,sp2,sp3,...' so that species consistently
+      # appear in alphabetical order
+      
+      as.character(sapply(community,
+                          FUN = function(s) paste(sort(strsplit(s, split = ',')[[1]]),
+                                                  collapse = ',')))
+    }
+    
+    string2matrix <- function(data) {
+      
+      # takes a data frame with 2 columns, the first one containing community names
+      # (species present separated by commas with no spaces, e.g. 'sp1,sp2,sp3,...') and
+      # the second one community functions, and converts it to binary matrix format
+      
+      species <- sort(unique(unlist(lapply(data[, 1],
+                                           FUN = function(community) strsplit(community, split = ',')[[1]]))))
+      
+      data_out <- lapply(1:nrow(data),
+                         FUN = function(i) matrix(as.numeric(species %in% strsplit(data[i, 1], split = ',')[[1]]), nrow = 1))
+      data_out <- do.call(rbind, data_out)
+      colnames(data_out) <- species
+      
+      data_out <- cbind(data_out, fun = data[, 2])
+      
+      return(data_out)
+      
+    }
+    
+    matrix2string <- function(data) {
+      
+      # inverse operation with respect to string2matrix
+      
+      species <- colnames(data)[-ncol(data)]
+      
+      communities <- sapply(1:nrow(data),
+                            FUN = function(i) paste(species[data[i, -ncol(data)] == 1], collapse = ','))
+      communities <- orderName(communities)
+      
+      return(data.frame(community = communities,
+                        fun = data[, ncol(data)]))
+      
+    }
+    
+    containsSpecies <- function(species, community) {
+      
+      # returns TRUE if species is present in community, FALSE otherwise
+      
+      return(sapply(community,
+                    FUN = function(comm) species %in% strsplit(comm, split = ',')[[1]]))
+      
+    }
+    
+    closestPaths <- function(target_comm, comm_list, species.removal = F) {
+      
+      # given a focal community (comm) and a list of other communities (comm_list), returns those in comm_list that are closest to comm (in terms of species addition)
+      
+      # fetch communities that are potential ancestors of the target
+      isAncestor <- function(community_1, community_2) { # check if community_1 is an ancestor of community_2 (i.e. all species in community_1 are also in community_2)
+        sapply(community_1,
+               FUN = function(x) all(strsplit(x, split = ',')[[1]] %in% strsplit(community_2, split = ',')[[1]]))
+      }
+      if (!species.removal) comm_list <- comm_list[isAncestor(comm_list, target_comm)]
+      
+      if (length(comm_list) == 0) {
+        
+        warning(paste('For community\n', target_comm, '\nno ancestors in data. Returning <empty> community.', sep = ''))
+        
+        comm_list <- ''
+        
+      }
+      
+      all_comms <- data.frame(community = c(target_comm, comm_list),
+                              fun = NA)
+      all_comms <- string2matrix(all_comms)
+      
+      comm <- all_comms[1, 1:(ncol(all_comms) - 1), drop = F]
+      comm_list <- all_comms[2:nrow(all_comms), 1:(ncol(all_comms) - 1), drop = F]
+      
+      dist <- sapply(1:nrow(comm_list),
+                     FUN = function(i) sum(abs(comm_list[i, ] - comm)))
+      
+      which_min <- which(dist == min(dist))
+      closest_comms <- comm_list[which_min, , drop = F]
+      
+      
+      # paths to comm
+      paths <- lapply(1:nrow(closest_comms),
+                      FUN = function(i) comm - closest_comms[i, ])
+      paths <- do.call(rbind, paths)
+      
+      sources <- matrix2string(cbind(as.data.frame(closest_comms), fun = NA))$community
+      
+      # return info
+      return(cbind(source = sources, target = target_comm, dist = dist[which_min], as.data.frame(paths)))
+      
+    }
+    
+    pathSteps <- function(target, source, single.traj = F) {
+      
+      # get steps in trajectory from source to target communities through addition/removal of species
+      # is the closure condition is satisfied, a single trajectory is sufficient (speeds up calculations)
+      
+      path <- closestPaths(target, source)
+      
+      traj <- path[1, 4:ncol(path), drop = F]
+      traj <- colnames(traj)[abs(traj[1, ]) == 1]
+      
+      # should a single trajectory be returned? (this is enough if the closer condition is satisfied)
+      if (single.traj) {
+        
+        traj <- matrix(traj, nrow = 1)
+        
+      } else { # otherwise, return all possible trajectories (orders of species addition)
+        
+        if (length(traj) <= 4) {
+          
+          traj <- do.call(rbind, permn(traj))
+          
+        } else {
+          
+          # if number of steps is too large, getting all possible trajectories is computationally out of reach
+          # in that case, we take only 25 arbitrarily chosen paths
+          traj <- do.call(rbind,
+                          lapply(1:25,
+                                 FUN = function(i) matrix(sample(traj, size = length(traj), replace = F), nrow = 1)))
+          
+        }
+        
+      }
+      
+      traj_steps <- lapply(1:nrow(traj),
+                           FUN = function(i) {
+                             
+                             # trajectory
+                             cumtraj <- orderName(sapply(1:length(traj[i, ]), FUN = function(j) paste(traj[i, 1:j], collapse = ',')))
+                             cumtraj <- c(source,
+                                          sapply(1:length(cumtraj), FUN = function(j) orderName(paste(c(strsplit(source, split = ',')[[1]],
+                                                                                                        cumtraj[j]), collapse = ','))))
+                             cumtraj <- sapply(cumtraj, # if there are repetitions of species, that means the species is being removed instead of added
+                                               FUN = function(x) {
+                                                 
+                                                 xtab <- table(strsplit(x, split = ',')[[1]])
+                                                 removed_sp <- names(xtab)[xtab > 1]
+                                                 
+                                                 xout <- strsplit(x, split = ',')[[1]]
+                                                 xout <- paste(xout[!(xout %in% removed_sp)], collapse = ',')
+                                                 
+                                                 return(xout)
+                                                 
+                                               })
+                             cumtraj <- as.character(cumtraj)
+                             
+                             # knock-ins at each step
+                             knockins <- traj[i, ]
+                             
+                             # backgrounds
+                             backgrounds <- cumtraj[-length(cumtraj)]
+                             backgrounds <- sapply(1:length(backgrounds),
+                                                   FUN = function(i) {
+                                                     xout <- strsplit(backgrounds[i], split = ',')[[1]]
+                                                     xout <- xout[xout != knockins[i]]
+                                                     xout <- paste(xout, collapse = ',')
+                                                     return(xout)
+                                                   })
+                             backgrounds <- as.character(backgrounds)
+                             
+                             # signs
+                             signs <- sapply(knockins, FUN = function(x) path[1, x])
+                             signs <- as.numeric(signs)
+                             
+                             return(list(trajectory = cumtraj,
+                                         backgrounds = backgrounds,
+                                         knock_ins = knockins,
+                                         signs = signs))
+                             
+                           })
+      
+      if(single.traj) traj_steps <- traj_steps[[1]]
+      
+      return(traj_steps)
+      
+    }
+    
+    # end of internal, auxiliary functions
+    # ----------------------------------------------------------------------------
+    
+    # structure replicates, if any (this whole chunk is borrowed from the
+    # structureData() function, see details there)
+    if (function_cols == 'auto') {
+      function_cols <- sapply(1:ncol(df),
+                              FUN = function(i) length(unique(df[, i])))
+      function_cols <- which(function_cols > 2)
+    }
+    comp_cols <- setdiff(1:ncol(df), function_cols)
+    elements <- colnames(df)[comp_cols]
+    df <- lapply(function_cols,
+                 FUN = function(i) aggregate(fun ~ .,
+                                             data = cbind(df[, comp_cols], fun = df[, i]),
+                                             FUN = mean))
+    
+    # mean and SD of function across replicates
+    df <- do.call(data.frame,
+                  aggregate(fun ~ .,
+                            data = do.call(rbind, df),
+                            FUN = function(x) c(mean = mean(x), sd = sd(x))))
+    df <- df[, c(elements, 'fun.mean')]
+    
+    # get FEEs
+    fits <- getFEEs(df)
+    elements <- fits$focal_element
+    fits <- data.frame(a = fits$intercept, b = fits$slope)
+    rownames(fits) <- elements
+    
+    # add "empty" assemblage if necessary
+    data <- matrix2string(df)
+    if (!any(data$community == '')) data <- rbind(data,
+                                                  data.frame(community = '',
+                                                             fun = 0))
+    
+    #format targets
+    if(!is.data.frame(target)) {
+      if (is.matrix(target)) {
+        target <- as.data.frame(target)
+      } else {
+        target <- as.data.frame(t(target))
+        colnames(target) <- elements
+      }
+    }
+    
+    target_id <- matrix2string(cbind(target, fun = NA))$community
+    
+    fun <- sapply(target_id,
+                  FUN = function(t) {
+                    
+                    paths <- closestPaths(t, data$community)
+                    
+                    # if there are too many possible paths from an in-sample community to the target community,
+                    # we randomly choose 5 of them to avoid heavily increasing computation time
+                    if (nrow(paths) > 5) paths <- paths[order(sample(1:nrow(paths), size = 5, replace = F)), ]
+                    
+                    fun <- lapply(1:nrow(paths),
+                                  FUN = function(i) {
+                                    
+                                    path <- paths[i, ]
+                                    steps <- pathSteps(t, path$source[1], single.traj = F)
+                                    
+                                    fun_i <- sapply(steps,
+                                                    FUN = function(st) {
+                                                      
+                                                      st$backgrounds[st$backgrounds == ''] <- '<empty>'
+                                                      
+                                                      # iterate
+                                                      comm <- st$trajectory[1]
+                                                      fun <- mean(data$fun[data$community == comm])
+                                                      for (s in 1:length(st$knock_ins)) {
+                                                        comm <- st$trajectory[s]
+                                                        fun <- fun + st$signs[s]*(fits[st$knock_ins[s], 'a'] + fits[st$knock_ins[s], 'b']*fun)
+                                                      }
+                                                      
+                                                      return(fun)
+                                                      
+                                                    })
+                                    
+                                    return(fun_i)
+                                    
+                                  })
+                    
+                    return(mean(unlist(fun)))
+                    
+                  })
+    
+    out <- cbind(target, predicted_fun = fun)
+    rownames(out) <- NULL
+    
+    return(out)
+    
+  }
   
 }
-
-
-
 
