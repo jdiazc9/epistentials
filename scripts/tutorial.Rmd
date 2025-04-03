@@ -424,6 +424,7 @@ predictF(df, targets)
 For instance, we can take all assemblages in the test set of the pyoverdine data, and predict their function using the in-sample observations in `df`:
 
 ```{r}
+test_set <- read.csv('../data_sets/pyoverdine-test_Diaz-Colunga2024.csv')
 targets <- test_set[, 1:8]
 predictions <- predictF(df, targets)
 ```
@@ -439,11 +440,15 @@ ggplot(merged, aes(x = predicted_fun, y = (function.rep1 + function.rep2)/2)) +
   theme(aspect.ratio = 1)
 ```
 
-This works fairly well, but it can work better if we infer residuals.
+### Residual inference
+
+This works fairly well, but it can work better. For starters, we can acknowledge that FEEs are generally "not perfect", that is, the linear models often have residuals:
 
 $$
 \Delta F_i (B) = a_i + b_i \, F(B) \color{red}{+ \theta_i(B)}
 $$
+
+We will not get into a lot of details in this tutorials, but the basic idea is that, if we are able to estimate the value of these residuals for the out-of-sample assemblages that we want to predict, this may refine our predictions. One way to infer residuals is by imposing the condition that every "stitching order" from a starting assemblage to a target, out-of-sample assemblage, should give the same predicted value. In the previous example, for instance, we could impose that the order `sp_1` $\rightarrow$ `sp_4` should give the same prediction as `sp_4` $\rightarrow$ `sp_1`. Again, we will not get into further details, but the general idea is that it's possible to make predictions while inferring the values of the FEEs residuals.
 
 To make predictions inferring residuals, we simply need to set the `infer_residuals` argument of the `predictF()` function to `TRUE`. For example, if we wanted to predict the function of the pyoverdine test set, this time inferring residuals, we would call:
 
