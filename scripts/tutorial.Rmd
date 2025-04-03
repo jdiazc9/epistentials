@@ -858,7 +858,7 @@ Of course, the way we just defined the interaction $\epsilon_{ij}(B)$, its value
 
 > ⚠️ *Do not get confused! Previously we defined* $\epsilon_{ij}$ *as the second-order interaction between elements* $i$ *and* $j$ *in the Taylor expansion of the function, that is:*
 >
-> $F = F_0 + \sum_i F_i \, x_i + \sum_i \sum_{j>i} \epsilon_{ij} \, x_i \, x_j + \sum_i \sum_{j>i} \sum_{k>j>i} \epsilon_{ijk} \, x_i \, x_j \, x_k + \cdots$.
+> $F = F_0 + \sum_i F_i \, x_i + \sum_i \sum_{j>i} \epsilon_{ij} \, x_i \, x_j + \sum_i \sum_{j>i} \sum_{k>j>i} \epsilon_{ijk} \, x_i \, x_j \, x_k + \cdots$
 >
 > *But note that, now, the definition we just provided for* $\epsilon_{ij}(B)$ *is slightly different. Both definitions would only be exactly equivalent in the "empty" background, that is, when* $B = 000 \cdots$
 
