@@ -125,7 +125,7 @@ plotLandscape(df)
 
 Notice the missing edges in the plot above?
 
-### A little exercise
+#### A little exercise
 
 Let us go back to the data set `df_xylose`, which is combinatorially complete. Imagine that we wanted to represent not the full landscape, but just a detail consisting of the assemblages $000000$, $100000$, $010000$, and $110000$. How would you do it? Try your solution below:
 
@@ -220,7 +220,7 @@ regression_coefs <- getFEEs(df)
 regression_coefs
 ```
 
-### A little exercise
+#### A little exercise
 
 In the example above, we extracted the coefficients of the OLS regression of $\Delta F$ against $F(B)$, where both quantities in the x and y axis are (by default) averaged across the three replicates in `df`. If we wanted to look at each replicate separately, how would we do it? To check how much replicate-to-replicate variation there is in these coeffcients, how can we quantify the standard deviation of the slope of species `sp_1` across replicates? What about the intercept? What about all other species, `sp_2` to `sp_8`?
 
@@ -300,7 +300,7 @@ Clearly, there are two regions which are determined by the presence or absence o
 
 > ⚠️ *Currently, there is no way to automatically detect this type of "regionality" using the* `plotFEEs()` *or* `getFEEs()` *methods. Modeling regionality needs to be manually enforced. This is work in progress (in all honesty, it has been work in progress for a long, looong time).*
 
-### A little excercise
+#### A little excercise
 
 Can you obtain the slopes and intercepts of the two FEEs for *B. subtilis*? (red and blue lines in the last plot). Try your solution here:
 
@@ -362,19 +362,15 @@ predicted_fun <- 0 + a_1 + a_4 + b_4*a_1
 predicted_fun
 ```
 
-### A little exercise
+#### A little exercise
 
 We just made a prediction for the function of the assemblage $10010000$. This assemblage is not in the data frame `df`, but it was assembled experimentally in a later experiment. The data from this later experiment is stored in the file `pyoverdine-test_Diaz-Colunga2024.csv`, under the `data_sets` folder. Can you load this data and check the empirical function of the assemblage $10010000$? How close is it to the predicted value (absolute and relative error)? Try your solution below:
 
 ```{r}
-test_set <- read.csv('../data_sets/pyoverdine-test_Diaz-Colunga2024.csv')
-true_fun <- rowMeans(test_set[28, 9:10])
 
-# relative error
-(predicted_fun - true_fun) / true_fun
 ```
 
-### Another little exercise
+#### Another little exercise
 
 Previously, we made the prediction by "adding" elements `sp_1` and `sp_4`, in that order, to the "empty" background. But we could have instead added `sp_4` first, and then `sp_1` after. Would the predicted value have changed? By how much? Try your solution below:
 
@@ -382,7 +378,7 @@ Previously, we made the prediction by "adding" elements `sp_1` and `sp_4`, in th
 
 ```
 
-### One last little exercise
+#### One last little exercise
 
 Up to this point, we have been making our predictions by starting off at the "empty" assemblage, which has function zero. But it turns out that the assemblage $10000000$ is present in the data set `df`, that is, we have an empirical value for its function. So we could just evaluate the FEE of `sp_4` at this empirical value, and compute the prediction simply as:
 
@@ -470,11 +466,12 @@ ggplot(merged, aes(x = predicted_fun, y = (function.rep1 + function.rep2)/2)) +
 
 > ⚠️ *The method* `predictF()` *with residual inference can be computationally expensive. It is recommended to set* `infer_residuals = TRUE` *only when data set size does not exceed 10 elements.*
 
-### A little exercise
+#### A little exercise
 
 Can you compute the R-squared between the predicted and true functions, both with and without residual inference? Try your solution below:
 
 ```{r}
+
 ```
 
 ## Interaction coefficients
@@ -766,3 +763,260 @@ ggplot(data.frame(x = model_coeffs_fourier$value.mean,
 > ⚠️ *Like with all other methods we have discussed in this tutorial,* `getInterCofficients()` *automatically detects which columns of the input data frame correspond to composition and which correspond to function. This behavior can be overridden by directly specifying the indices of the function columns via the* `function_cols` *argument:* `getInterCoefficients(df, function_cols = c(9, 10, 11), mode = 'Taylor')`*. As usual, if multiple function columns are specified/detected, they are treated as different replicates.*
 
 ## Effective interactions
+
+In order to understand how FEEs emerge from interactions between elements, it is useful to define a set of *effective interactions*. First, let's start by noting a few things regarding how elements' functional effects and interactions vary across backgrounds.
+
+### Background-averaged functional effects
+
+The functional effect of an element (say, element $i$) on a background $B$ is denoted as $\Delta F_i (B)$. Naturally, this functional effect can be variable across backgrounds. Let us see an example using the pyoverdines data set, `df`. How variable are the functional effects of all eight species?
+
+Let's start by computing all functional effects using the `structureData()` method.
+
+```{r}
+delta_Fs <- structureData(df)
+```
+
+For simplicity, we will get rid of some columns which we are not interested in right now:
+
+```{r}
+delta_Fs <- delta_Fs[, c(1:9, 14)]
+colnames(delta_Fs)[10] <- 'delta_fun'
+```
+
+```{r}
+ggplot(delta_Fs, aes(x = delta_fun)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~focal_element) +
+  geom_vline(xintercept = 0,
+             color = 'gray')
+```
+
+We can see that all functional effects follow some relatively wide distributions. Now we could ask what the mean of those distributions are. For element $i$, we denote this background-averaged functional effect as $\langle \Delta F_i \rangle_B$.
+
+```{r}
+delta_Fs_avg <- aggregate(delta_fun ~ focal_element,
+                          data = delta_Fs,
+                          FUN = mean)
+```
+
+Now, this data frame `delta_Fs_avg` contains the average functional effects of all elements.
+
+As a last exercise, we will define $\langle \Delta F_i \rangle_{B_j}$ as the average functional effect of element $i$, but where the average is taken only across those backgrounds that do not contain element $j$. For example, to compute $\langle \Delta F_1 \rangle_{B_2}$ we would need to follow these steps:
+
+-   Identify all backgrounds that do not contain element 2
+-   Quantify the functional effect of element 1 in all those backgrounds as $F(B+1) - F(B)$
+-   Take the average
+
+#### A little exercise
+
+In the xylose dataset, `df_xylose`, can you quantify the value of $\langle \Delta F_\text{SL104} \rangle_{B_\text{SL187}}$? Try your solution below:
+
+```{r}
+
+```
+
+### Background-averaged functional interactions
+
+Let us consider a specific background assemblage $B$ (for example, $B$ could be assemblage $00101$). Let us also consider a pair of elements, for example elements 1 and 2. Adding element 1 to $B$ would result in assemblage $\color{red}{1}0101$, and the function would change by an amount $\Delta F_1 (B)$, that is, simply the functional effect of element 1 on the background $B$. Similarly, adding element 2 to the background would give assemblage $0\color{blue}{1}101$, changing the function by an amount $\Delta F_2(B)$.
+
+Now, how would the function change if we added both elements to the background $B$? If we did this, we could expect that the functional effects of both elements would simply add up:
+
+$$
+F(B+\color{red}{1}+\color{blue}{2}) \stackrel{?}{=} F(B) + \color{red}{\Delta F_1(B)} + \color{blue}{\Delta F_2(B)}
+$$
+
+$$
+F(\color{red}{1}\color{blue}{1}101) \stackrel{?}{=} F(00101) + \color{red}{\Delta F_1(00101)} + \color{blue}{\Delta F_2(00101)}
+$$
+
+However, in practice, we may often find that the actual function of the resulting assemblage ($B+1+2$) deviates from this additive expectation by some amount. We denote this amount $\epsilon_{12}(B)$.
+
+$$
+F(B+\color{red}{1}+\color{blue}{2}) = F(B) + \color{red}{\Delta F_1(B)} + \color{blue}{\Delta F_2(B)} + \epsilon_{12}(B)
+$$
+
+In this context, $\epsilon_{12}(B)$ can be interpreted as the magnitude of the interaction between elements 1 and 2 in the background $B$.
+
+From the previous equation we can derive that, in general, given any background $B$ and any pair of elements $i$ and $j$, we can define the functional interaction $\epsilon_{ij}(B)$ as:
+
+$$
+\epsilon_{ij}(B) = F(B+i+j) - F(B) - \Delta F_i (B) - \Delta F_j (B)
+$$
+
+But, since we know that the functional effect $\Delta F_i(B)$ is simply equal to $F(B+i) - F(B)$, we can write the equation above as:
+
+$$
+\epsilon_{ij}(B) = F(B+i+j) - F(B+i) - F(B+j) + F(B)
+$$
+
+Of course, the way we just defined the interaction $\epsilon_{ij}(B)$, its value will generally depend on the background. We define $\langle \epsilon_{ij} \rangle$ as the background-averaged value of this interaction.
+
+> ⚠️ *Do not get confused! Previously we defined* $\epsilon_{ij}$ *as the second-order interaction between elements* $i$ *and* $j$ *in the Taylor expansion of the function, that is:*
+>
+> $F = F_0 + \sum_i F_i \, x_i + \sum_i \sum_{j>i} \epsilon_{ij} \, x_i \, x_j + \sum_i \sum_{j>i} \sum_{k>j>i} \epsilon_{ijk} \, x_i \, x_j \, x_k + \cdots$.
+>
+> *But note that, now, the definition we just provided for* $\epsilon_{ij}(B)$ *is slightly different. Both definitions would only be exactly equivalent in the "empty" background, that is, when* $B = 000 \cdots$
+
+#### A little exercise
+
+In the pyoverdines data set `df`, can you quantify the functional interaction between elements `sp_1` and `sp_5` in the "empty" background $00000000$? What about in the background that contains elements `sp_7` and `sp_8`? Try your solution below:
+
+```{r}
+
+```
+
+#### Another little exercise
+
+In the same data set, can you quantify $\langle \epsilon_{15} \rangle$? Try your solution below:
+
+```{r}
+
+```
+
+### Defining an "effective interaction"
+
+We define the *effective interaction* between elements $i$ and $j$ (denoted $\tilde{\epsilon}_{ij}$) as the ratio between the average functional interaction between those elements and the average functional effect of element $j$ across all backgrounds that do not contain element $i$.
+
+I know this sounds scary, but it's really not that hard. Mathematically, we would write:
+
+$$
+\tilde{\epsilon}_{ij} = \frac{\langle \epsilon_{ij} \rangle}{\langle \Delta F_j \rangle_{B_i}}
+$$
+
+Note that, in the last couple of exercises, we just saw how to calculate the quantities that go in the numerator and the denominator! All we have to do now is divide one by the other.
+
+We also define a weight of the interaction (denoted $\omega_{ij}$) as
+
+$$
+\omega_{ij} = \frac{\langle \Delta F_j \rangle_{B_i}^2}{\sum_{k \neq i} \langle \Delta F_k \rangle_{B_i}^2}
+$$
+
+Again, this looks scary, but it is not that hard to interpret. What goes in the numerator is just the average functional effect of $j$ (across all backgrounds without $i$), squared. In the numerator goes the sum of all the analogous average functional effects for all elements (except $i$).
+
+> ⚠️ *If you have read our papers, you may notice that the definition of an "effective interaction", as well as the notation we use to refer to it, have changed over time. In some papers we do not define a "weight", and instead we just call an "effective interaction" to the whole product* $\omega_{ij} \cdot \tilde{\epsilon}_{ij}$. *In* *other works, we denote the effective interaction as* $\beta_{ij}$ *instead of* $\tilde{\epsilon}_{ij}$*. In any case, in this tutorial we will stick to the notation that we just described.*
+
+#### Example
+
+Let us see a step-by-step example. Let's consider the xylose data set, `df_xylose`. We will try to compute the weight of the effective interaction between element 1 (species named `SL104`) and element 3 (species named `SL187`). That is, we want to quantify:
+
+$$
+\omega_{\text{SL104,SL187}}
+$$
+
+**Step 1.** Let's compute all functional effects of every element. Remember that we can do this very easily using the `structureData()` method:
+
+```{r}
+deltaF_xylose <- structureData(df_xylose)
+```
+
+But remember! In order to compute the weight $\omega_{ij}$, we will need to average these functional effects only across those backgrounds that do not contain element 1 (`SL104`). So, let's remove the backgrounds that do contain it:
+
+```{r}
+deltaF_xylose <- deltaF_xylose[deltaF_xylose$SL104 == 0, ]
+```
+
+**Step 2.** Now, let's calculate the average functional effect of each element across the remaining backgrounds:
+
+```{r}
+deltaF_avg_xylose <- aggregate(delta_fun.mean ~ focal_element,
+                               data = deltaF_xylose,
+                               FUN = mean)
+```
+
+**Step 3.** To get the numerator in $\omega_{\text{SL104,SL187}}$, we simply need to extract the average functional effect of element `SL187` and square it:
+
+```{r}
+numerator <- deltaF_avg_xylose$delta_fun.mean[3]^2
+```
+
+**Step 4.** To get the denominator, we just need to square the average functional effects of all elements (except `SL104`) and sum them:
+
+```{r}
+denominator <- sum(deltaF_avg_xylose$delta_fun.mean[2:6]^2)
+```
+
+**Final step.** We are done! The weight we wanted to calculate is simply the numerator over the denominator:
+
+```{r}
+numerator / denominator
+```
+
+### Extracting effective interactions and weights from a data set
+
+I admit that this whole section may have been confusing, but fear not. If we have a data set df, we can extract all effective interactions and weights very easily, simply using the `getEffectiveInteractions()` method. For instance, for the xylose data set:
+
+```{r}
+eff_inter_xylose <- getEffectiveInteractions(df_xylose)
+```
+
+Note that, as usual, the resulting data frame `eff_inter_xylose` returns means and standard deviations across replicates, if there are any. Since in this data set there is only one replicate, the columns corresponding to standard deviations are just *NA*s.
+
+Let's go back to the previous example, where we calculated the wight of the effective interaction between `SL104` and `SL187`. In fact, we could have done that very easily thanks to `getEffectiveInteractions()`:
+
+```{r}
+subset(eff_inter_xylose, element_i == 'SL104' & element_j == 'SL187')$weight_ij.mean
+```
+
+Notice that this data frame also contains some additional information, such as the values of $\langle \Delta F_j \rangle_{B_i}$ (in the column `deltaF_j`) or the values of $\langle \epsilon_{ij} \rangle$ (in the column `epsilon_ij`).
+
+#### A little exercise
+
+Are effective interactions symmetric? That is, is $\tilde{\epsilon}_{ij}$ equal to $\tilde{\epsilon}_{ji}$? What about the weights? Check the answer here if you need to:
+
+```{r}
+
+```
+
+### Why do we care about effective interactions?
+
+The short answer is that they allow us to connect some features of the FEE of an element to that element's interactions. For example, the FEE slope of element $i$, which we had denoted $b_i$, can be estimated as a weighted sum of all effective interactions of $i$ with all other elements:
+
+$$
+b_i \approx \sum_{j \neq i} \omega_{ij} \, \tilde{\epsilon}_{ij}
+$$
+
+For instance, let's go back to the xylose data set and try to estimate the slope of the FEE for element `SL104` from its effective interactions.
+
+```{r}
+eff_inter_SL104 <- subset(eff_inter_xylose, element_i == 'SL104')
+estimated_slope <- sum(eff_inter_SL104$weight_ij.mean * eff_inter_SL104$effInter_ij.mean)
+estimated_slope
+```
+
+And let's compare it to the true slope:
+
+```{r}
+fees_xylose <- getFEEs(df_xylose)
+true_slope <- subset(fees_xylose, focal_element == 'SL104')$slope
+true_slope
+```
+
+In fact, let's do it for every element in the data set!
+
+```{r}
+eff_inter_xylose$product <- eff_inter_xylose$weight_ij.mean * eff_inter_xylose$effInter_ij.mean
+estimated_slopes_all <- aggregate(product ~ element_i,
+                                  data = eff_inter_xylose,
+                                  FUN = sum)
+colnames(estimated_slopes_all)[2] <- 'estimated_slope'
+
+ggplot(data.frame(estimated_slope = estimated_slopes_all$estimated_slope,
+                  true_slope = fees_xylose$slope),
+       aes(x = estimated_slope, y = true_slope)) +
+  geom_abline(slope = 1, intercept = 0, color = 'gray') +
+  geom_point() +
+  theme(aspect.ratio = 1) +
+  xlim(-1.3, 0) + ylim(-1.3, 0)
+```
+
+#### One last little exercise
+
+In the data set from Sanchez-Gorostiaga et al. (2019), which we had loaded as `df_amyl`, can you quantify the effective interactions of the species *B. thuringiensis* (denoted as `T` in the data frame) with all other species? What species does *B. thuringiensis* have the strongest effective interaction with? And the weakest?
+
+Now, can you do the same thing with *P. polymyxa* (denoted as `P` in the data frame)? What is special about the effective interactions of this species? Take a look at the FEE for *P. polymyxa* again. Remember what caused the "split" in this FEE?
+
+Try your solution(s) here:
+
+```{r}
+
+```

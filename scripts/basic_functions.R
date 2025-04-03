@@ -433,8 +433,7 @@ getEffectiveInteractions <- function(df, function_cols = 'auto') {
                                        FUN = function(x) c(mean = mean(x), sd = sd(x))))
   
   # output
-  return(list(effInter = effInter,
-              expected_slopes = expected_slopes))
+  return(effInter)
   
 }
 
